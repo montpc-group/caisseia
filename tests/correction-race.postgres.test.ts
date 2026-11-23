@@ -4,7 +4,7 @@
  * passes and the net never goes below 0 — with caller clients (caller txs)
  * and without (the SDK opens its own transaction).
  *
- * A container that fails to start FAILS this file (set NF525_SKIP_POSTGRES=1
+ * A container that fails to start FAILS this file (set CAISSEIA_SKIP_POSTGRES=1
  * to skip it explicitly).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -19,6 +19,7 @@ import { read } from '../src/eventStore.js';
 import { verifyChain, hash, canonicalize } from '../src/crypto.js';
 import type { AppendInput, TxOptions } from '../src/storage/EventStorage.js';
 import type { EventRecord } from '../src/eventStore.js';
+import { readEnv } from '../src/env.js';
 
 /**
  * Before the first correction insert, an encaissement written WITHOUT the
@@ -46,7 +47,7 @@ class UnlockedWriterBetween extends PostgresStorage {
   }
 }
 
-const d = process.env['NF525_SKIP_POSTGRES'] === '1' ? describe.skip : describe;
+const d = readEnv('SKIP_POSTGRES') === '1' ? describe.skip : describe;
 
 const refund = (originalId: string, reason: string) => ({
   originalId, montantCentimes: -700, devise: 'EUR' as const, type: 'remboursement_partiel' as const, reason,

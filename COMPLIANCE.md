@@ -144,7 +144,7 @@ BOI-TVA-DECLA-30-10-30 § 80 :
 ### Fichiers concernés
 
 - `src/encaissement.ts` — `recordEncaissement()`, pas d'`update`
-- `src/corrections.ts` — `recordCorrection(originalId, amount, reason)`
+- `src/corrections.ts` — `recordCorrection(workspaceId, input, opts?)`
 - `schemas/encaissement.schema.ts` — schema avec `readonly` sur les champs critiques
 
 ### Traçabilité opérateur et terminal (BOI-TVA-DECLA-30-10-30)

@@ -3,7 +3,7 @@
  * exported from the public entry, CLI runnable with plain node (no tsx).
  *
  * Builds the package first (`pnpm build`). A container that fails to start
- * FAILS this file (set NF525_SKIP_POSTGRES=1 to skip it explicitly).
+ * FAILS this file (set CAISSEIA_SKIP_POSTGRES=1 to skip it explicitly).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -12,8 +12,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
+import { readEnv } from '../src/env.js';
 
-const d = process.env['NF525_SKIP_POSTGRES'] === '1' ? describe.skip : describe;
+const d = readEnv('SKIP_POSTGRES') === '1' ? describe.skip : describe;
 const ROOT = resolve(__dirname, '..');
 const DIST_INDEX = join(ROOT, 'dist/src/index.js');
 const DIST_MIGRATE = join(ROOT, 'dist/src/storage/migrate.js');
@@ -46,7 +47,7 @@ d('migrate from the built package (dist)', () => {
 
   it('plain node runs the dist CLI and creates the schema', async () => {
     const r = spawnSync(process.execPath, [DIST_MIGRATE], {
-      env: { PATH: process.env['PATH'], NF525_DATABASE_URL: url },
+      env: { PATH: process.env['PATH'], CAISSEIA_DATABASE_URL: url },
       encoding: 'utf-8',
     });
     expect(r.stderr).toContain('applying 001_initial.sql');

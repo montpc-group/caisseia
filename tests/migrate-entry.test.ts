@@ -39,7 +39,7 @@ describe('migrate CLI entry', () => {
 
   it('running migrate.ts directly still runs the CLI', () => {
     const r = runWithTsx(MIGRATE_TS);
-    expect(r.stderr).toContain('NF525_DATABASE_URL or opts.connectionString is required');
+    expect(r.stderr).toContain('CAISSEIA_DATABASE_URL or opts.connectionString is required');
     expect(r.status).toBe(1);
   });
 });

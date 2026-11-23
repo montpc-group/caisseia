@@ -12,6 +12,8 @@
 
 // ─── Public API surface (Milestone 1) ─────────────────────────────────
 
+import { defaultEnv } from './env.js';
+
 export {
   recordEncaissement,
   type Encaissement,
@@ -52,6 +54,13 @@ export {
   type ClosureAggregate,
   type CloseOptions,
 } from './closures.js';
+
+export {
+  setBusinessCalendar,
+  getBusinessCalendar,
+  DEFAULT_CALENDAR,
+  type BusinessCalendar,
+} from './calendar.js';
 
 export {
   exportPeriod,
@@ -108,15 +117,22 @@ export {
  * À initialiser une fois au démarrage de chaque app consommatrice.
  */
 export interface NF525Config {
-  /** Connection Postgres pour la table nf525_event (rôle nf525_app). */
-  databaseUrl: string;
+  /**
+   * 'postgres' (défaut) : registre Postgres, `databaseUrl` requis.
+   * 'memory' : registre en mémoire du processus, perdu au redémarrage — tests
+   * et démos uniquement ; un avertissement est émis une fois par processus.
+   */
+  storage?: 'postgres' | 'memory';
+
+  /** Connection Postgres pour la table nf525_event (rôle nf525_app). Requis sauf `storage: 'memory'`. */
+  databaseUrl?: string;
 
   /** Identifiant du workspace/tenant (multi-tenant) — défaut, peut être surchargé par appel. */
   defaultWorkspaceId?: string;
 
   /**
    * Backend de signature ('file' | 'kms' | 'memory').
-   * Surchargeable par NF525_SIGNER. 'file' attend NF525_SIGNING_KEY_PATH.
+   * Surchargeable par CAISSEIA_SIGNER. 'file' attend CAISSEIA_SIGNING_KEY_PATH.
    */
   signerKind?: 'file' | 'kms' | 'memory';
 
@@ -135,26 +151,25 @@ export interface NF525Config {
  * Doit être appelé une seule fois au démarrage. Idempotent.
  */
 export async function initialize(config: NF525Config): Promise<void> {
+  if (config.storage === 'memory') {
+    defaultEnv('STORAGE', 'memory');
+    if (config.signerKind) defaultEnv('SIGNER', config.signerKind);
+    return;
+  }
   if (!config.databaseUrl) {
-    throw new Error('NF525.initialize: databaseUrl is required');
+    throw new Error("NF525.initialize: databaseUrl is required (or storage: 'memory' for tests and demos)");
   }
   // Defer wiring until first use — getActiveStorage / getActiveSigner read env.
   // For now we only set process.env so subsequent lazy resolves see the values.
-  if (!process.env['NF525_DATABASE_URL']) {
-    process.env['NF525_DATABASE_URL'] = config.databaseUrl;
-  }
-  if (config.signerKind && !process.env['NF525_SIGNER']) {
-    process.env['NF525_SIGNER'] = config.signerKind;
-  }
-  if (!process.env['NF525_STORAGE']) {
-    process.env['NF525_STORAGE'] = 'postgres';
-  }
+  defaultEnv('DATABASE_URL', config.databaseUrl);
+  if (config.signerKind) defaultEnv('SIGNER', config.signerKind);
+  defaultEnv('STORAGE', 'postgres');
 }
 
 // ─── Constants ────────────────────────────────────────────────────────
 
 /** Version du module — synchronisée avec package.json */
-export const MODULE_VERSION = '1.0.0-rc.5';
+export const MODULE_VERSION = '1.0.0-rc.7';
 
 /** Référence légale principale */
 export const LEGAL_REFERENCE = 'Article 286 I 3°bis CGI';

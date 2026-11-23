@@ -27,7 +27,7 @@ import { recordEncaissement } from '../src/encaissement.js';
 import { recordCorrection } from '../src/corrections.js';
 import { canonicalize, verifySignature } from '../src/crypto.js';
 import { verifyChainIntegrity } from '../src/integrity.js';
-import { freshHarness, type Harness } from './_helpers.js';
+import { freshHarness, travelTo, type Harness } from './_helpers.js';
 
 describe('Clôtures périodiques', () => {
   let h: Harness;
@@ -137,6 +137,8 @@ describe('Clôtures périodiques', () => {
         schemaVersion: closure.schemaVersion,
         chainHeads: closure.chainHeads,
         previousClosureHash: closure.previousClosureHash,
+        periodKey: closure.periodKey,
+        calendar: closure.calendar,
       };
       const ok = await verifySignature(
         canonicalize(skeleton),
@@ -198,6 +200,7 @@ describe('Clôtures périodiques', () => {
 
       // Day 2: no new encaissements after midnight in the test, so day2's window
       // contains zero rows. Cumul carries forward.
+      travelTo(tomorrow);
       const c2 = await closeDay(h.workspace, tomorrow);
       expect(c2.aggregate.caTotalCentimes).toBe(0);
       expect(c2.aggregate.cumulPerpetuel).toBe(1000);
@@ -210,6 +213,7 @@ describe('Clôtures périodiques', () => {
   describe('Clôture mensuelle', () => {
     it('refuse de clôturer un mois si toutes les journées ne sont pas clôturées', async () => {
       // Close only a couple of days of February 2027 (28 days).
+      travelTo('2028-01-01T00:00:00Z');
       await closeDay(h.workspace, new Date(Date.UTC(2027, 1, 1)));
       await closeDay(h.workspace, new Date(Date.UTC(2027, 1, 2)));
 
@@ -223,14 +227,17 @@ describe('Clôtures périodiques', () => {
       // Instead test the aggregation MECHANICS over a fully-closed empty month
       // (Feb 2027 = 28 days). Non-zero aggregation per day is exercised in the
       // day-level tests above.
+      travelTo('2028-01-01T00:00:00Z');
       for (let d = 1; d <= 28; d++) {
         await closeDay(h.workspace, new Date(Date.UTC(2027, 1, d)));
       }
 
       const month = await closeMonth(h.workspace, 2027, 2);
       expect(month.type).toBe('month');
-      expect(month.periodStart.startsWith('2027-02-01')).toBe(true);
-      expect(month.periodEnd.startsWith('2027-02-28')).toBe(true);
+      expect(month.periodKey).toBe('2027-02');
+      // Paris (UTC+1): 01/02 00:00 → 28/02 23:59:59.999 local.
+      expect(month.periodStart).toBe('2027-01-31T23:00:00.000Z');
+      expect(month.periodEnd).toBe('2027-02-28T22:59:59.999Z');
       expect(month.aggregate.caTotalCentimes).toBe(0);
       expect(month.aggregate.nbTransactions).toBe(0);
       // Cumul perpétuel of month closure = last day's cumul (0 here).
@@ -247,6 +254,7 @@ describe('Clôtures périodiques', () => {
   describe('Clôture annuelle', () => {
     it("refuse de clôturer une année si tous les mois ne sont pas clôturés", async () => {
       // Close only Jan 2027 (all 31 days + month closure).
+      travelTo('2028-01-01T00:00:00Z');
       for (let d = 1; d <= 31; d++) {
         await closeDay(h.workspace, new Date(Date.UTC(2027, 0, d)));
       }
@@ -258,6 +266,7 @@ describe('Clôtures périodiques', () => {
     it("agrège les clôtures mensuelles de l'année", async () => {
       // Close every day of every month of 2027 (empty closures), then every month, then year.
       // 365 days + 12 months + 1 year — runs in <1s on InMemoryStorage.
+      travelTo('2028-01-01T00:00:00Z');
       for (let m = 1; m <= 12; m++) {
         const lastDay = new Date(Date.UTC(2027, m, 0)).getUTCDate();
         for (let d = 1; d <= lastDay; d++) {
@@ -268,8 +277,9 @@ describe('Clôtures périodiques', () => {
 
       const year = await closeYear(h.workspace, 2027);
       expect(year.type).toBe('year');
-      expect(year.periodStart.startsWith('2027-01-01')).toBe(true);
-      expect(year.periodEnd.startsWith('2027-12-31')).toBe(true);
+      expect(year.periodKey).toBe('2027-12');
+      expect(year.periodStart).toBe('2026-12-31T23:00:00.000Z');
+      expect(year.periodEnd).toBe('2027-12-31T22:59:59.999Z');
       expect(year.aggregate.caTotalCentimes).toBe(0);
       expect(year.aggregate.nbTransactions).toBe(0);
 

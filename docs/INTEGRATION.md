@@ -9,7 +9,7 @@ Step-by-step guide for consumer apps integrating CAISSEIA.
 - Node >= 20
 - PostgreSQL instance (dedicated database or schema recommended)
 - Ed25519 signing key (generated, chmod 600)
-- `caisseia` at a version covered by a signed attestation éditeur (see `ATTESTATION.md`)
+- `caisseia` (no attestation éditeur is signed yet: see `ATTESTATION.md`)
 
 ## 2. Install
 
@@ -23,28 +23,30 @@ pnpm add caisseia
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NF525_DATABASE_URL` | Yes | Postgres connection string (role `nf525_app` in prod) |
-| `NF525_STORAGE` | Yes | `postgres` (prod) or `memory` (tests) |
-| `NF525_SIGNER` | Yes | `file` (dev/prod) or `memory` (tests) or `kms` (future) |
-| `NF525_SIGNING_KEY_PATH` | If signer=file | Path to Ed25519 PEM key, chmod 600 |
-| `NF525_SIGNING_KEY_VERSION` | Yes | Active key version in the public key registry |
+| `CAISSEIA_DATABASE_URL` | Yes | Postgres connection string (role `nf525_app` in prod) |
+| `CAISSEIA_STORAGE` | Yes (set to `postgres` by `initialize({ databaseUrl })`) | `postgres`, or `memory` for tests and demos only (records lost on restart, one warning per process). Unset with no `setActiveStorage(...)` → every call throws `NF525_STORAGE_NOT_CONFIGURED` |
+| `CAISSEIA_SIGNER` | Yes | `file` (dev/prod) or `memory` (tests) or `kms` (future) |
+| `CAISSEIA_SIGNING_KEY_PATH` | If signer=file | Path to Ed25519 PEM key, chmod 600 |
+| `CAISSEIA_SIGNING_KEY_VERSION` | Yes | Active key version in the public key registry |
 
 Example `.env`:
 
 ```env
-NF525_DATABASE_URL=postgresql://nf525_app:password@localhost:5432/nf525
-NF525_STORAGE=postgres
-NF525_SIGNER=file
-NF525_SIGNING_KEY_PATH=/etc/nf525/signing-key.pem
-NF525_SIGNING_KEY_VERSION=v1
+CAISSEIA_DATABASE_URL=postgresql://nf525_app:password@localhost:5432/nf525
+CAISSEIA_STORAGE=postgres
+CAISSEIA_SIGNER=file
+CAISSEIA_SIGNING_KEY_PATH=/etc/nf525/signing-key.pem
+CAISSEIA_SIGNING_KEY_VERSION=v1
 ```
+
+The former `NF525_*` names (`NF525_DATABASE_URL`, …) are still read when the `CAISSEIA_*` one is unset, with one deprecation warning per name (`CAISSEIA_ENV_DEPRECATED`).
 
 ## 4. Database Migration
 
 Run once before first use, with the role that owns the database (it creates the `nf525_app` role). Plain node, no extra tooling:
 
 ```bash
-NF525_DATABASE_URL=postgresql://... npx caisseia-migrate
+CAISSEIA_DATABASE_URL=postgresql://... npx caisseia-migrate
 ```
 
 Or from your own deploy code:
@@ -52,7 +54,7 @@ Or from your own deploy code:
 ```typescript
 import { migrate } from 'caisseia';
 
-await migrate({ connectionString: process.env.NF525_DATABASE_URL });
+await migrate({ connectionString: process.env.CAISSEIA_DATABASE_URL });
 // → { applied: ['001_initial.sql', ...] }
 ```
 
@@ -77,15 +79,15 @@ Call `initialize()` once at app startup:
 import { initialize } from 'caisseia';
 
 await initialize({
-  databaseUrl: process.env.NF525_DATABASE_URL!,
+  databaseUrl: process.env.CAISSEIA_DATABASE_URL!,
   defaultWorkspaceId: 'ws-your-tenant-id',
   signerKind: 'file',
   defaultCurrency: 'EUR',
   tvaRates: [
-    { code: '20', rate: 20, label: 'TVA 20%' },
-    { code: '10', rate: 10, label: 'TVA 10%' },
-    { code: '5.5', rate: 5.5, label: 'TVA 5.5%' },
-    { code: '0', rate: 0, label: 'Exonere' },
+    { code: 'TVA20', rate: 0.2, label: 'TVA 20%' },
+    { code: 'TVA10', rate: 0.1, label: 'TVA 10%' },
+    { code: 'TVA55', rate: 0.055, label: 'TVA 5,5%' },
+    { code: 'EXONERE', rate: 0, label: 'Exonéré' },
   ],
 });
 ```
@@ -97,19 +99,21 @@ Every client payment must go through `recordEncaissement()`:
 ```typescript
 import { recordEncaissement } from 'caisseia';
 
-const result = await recordEncaissement({
-  workspaceId: 'ws-tenant-123',
-  montantCentimes: 5000,         // 50.00 EUR — always in centimes, integer
-  modePaiement: 'carte_bancaire', // 'especes' | 'carte_bancaire' | 'virement' | 'cheque' | 'stripe' | 'autre'
-  tvaCode: '20',
-  referenceExterne: 'INV-2026-001',
-  operateurId: 'user-42',
-  metadata: { client: 'ACME SARL' },
+const enc = await recordEncaissement('ws-tenant-123', {
+  montantCentimes: 5000, // 50.00 EUR — always in centimes, integer
+  devise: 'EUR',         // 'EUR' | 'CHF'
+  mode: 'cb',            // 'especes' | 'cb' | 'cb_mobile' | 'virement' | 'cheque' | 'stripe' | 'wallet' | 'autre'
+  tvaCode: 'TVA20',      // uppercase code, e.g. TVA20, TVA55, FRANCHISE_BASE
+  factureId: 'INV-2026-001',
+  clientRef: 'ACME SARL',
+  operatorId: 'user-42',
 });
-// result.event contains the signed, hash-chained record
+// enc._id, enc.sequence, enc.hash: the hash-chained record
 ```
 
 **Rules:**
+- The input is strict: an unknown field is refused (optional fields: `factureId`, `reservationId`,
+  `clientRef`, `stripeRef`, `notes`, `operatorId`, `registerId`)
 - `montantCentimes` must be a strictly positive integer
 - Never use floats for monetary amounts
 - Every call creates an immutable, hash-chained record
@@ -161,13 +165,13 @@ Never modify an existing record. Create a correction:
 ```typescript
 import { recordCorrection } from 'caisseia';
 
-const correction = await recordCorrection({
-  workspaceId: 'ws-tenant-123',
-  originalId: result.event.id,       // references the original encaissement
-  montantCentimes: -2500,            // negative = refund (partial: -25.00 EUR)
-  motif: 'Remboursement partiel client',
-  type: 'annulation_partielle',      // 'annulation_totale' | 'annulation_partielle' | 'rectification'
-  operateurId: 'user-42',
+const correction = await recordCorrection('ws-tenant-123', {
+  originalId: enc._id,      // the original encaissement
+  montantCentimes: -2500,   // negative = refund (partial: -25.00 EUR)
+  devise: 'EUR',            // must match the original
+  type: 'remboursement_partiel', // 'erreur_montant' | 'remboursement_partiel' | 'remboursement_total' | 'annulation_totale' | 'avoir_commercial' | 'autre'
+  reason: 'Remboursement partiel client',
+  operatorId: 'user-42',
 });
 ```
 
@@ -176,33 +180,62 @@ To get the net amount after corrections:
 ```typescript
 import { getNetAmount } from 'caisseia';
 
-const net = await getNetAmount('ws-tenant-123', originalId);
-// net.netAmountCentimes = 5000 + (-2500) = 2500
+const net = await getNetAmount('ws-tenant-123', enc._id);
+// net = 5000 + (-2500) = 2500 (centimes)
 ```
 
 ## 8. Closures (Daily / Monthly / Annual)
 
-Closures must be automated. They seal the period and produce signed aggregates.
+Closures must run on a schedule. They seal the period and produce signed aggregates.
+
+### Business days
+
+A day closure covers one **business day**: the business's local civil day, in its IANA
+time zone (default `Europe/Paris`; overseas departments use their own zone), from its
+cut-off hour (default `00:00`) to the next day's cut-off. DST days last 23 or 25 hours.
+Timestamps stay stored in UTC; only the grouping is local. A month closure covers the
+calendar month at that cut-off; a yearly closure covers the exercice, which ends with the
+fiscal-year-end month (default December).
+
+```typescript
+import { setBusinessCalendar } from 'caisseia';
+
+// A bar open until 4 a.m.: a 03:30 sale belongs to the previous business day.
+await setBusinessCalendar('ws-tenant-123', { dayCutoff: '05:00' });
+// Exercice ending 30 June:
+await setBusinessCalendar('ws-tenant-123', { fiscalYearEndMonth: 6 });
+```
+
+A change is logged in the JET (`business_calendar_set`) and applies from the day after the
+last day closure: sealed days never change. A workspace that already holds UTC-bounded day
+closures (sealed before rc.7) keeps UTC until it calls `setBusinessCalendar`.
+
+Each closure signs its `periodKey` (day `YYYY-MM-DD`, month `YYYY-MM`, exercice: its last
+month `YYYY-MM`) and the calendar used. `periodStart` / `periodEnd` are UTC instants: identify
+a closure by `periodKey`, never by the UTC date of `periodStart`.
 
 ### Daily Closure (Z journalier)
 
-Run at end of each business day (or 00:00 UTC via cron):
+Run at the end of each business day:
 
 ```typescript
 import { closeDay } from 'caisseia';
 
 const closure = await closeDay('ws-tenant-123', '2026-05-18', {
-  tvaRates: [
-    { code: '20', rate: 20 },
-    { code: '10', rate: 10 },
-  ],
+  tvaRates: { TVA20: 0.2, TVA10: 0.1 },
 });
 // closure contains signed aggregates: totals by payment mode, by TVA code, cumul perpetuel
 ```
 
+`date` is a business date (`'YYYY-MM-DD'`) or a `Date` (the business day containing that
+instant). A day that has not started is refused. A day closed before its end (a Z taken at
+19:00) ends at the closing instant; later sales that day belong to the next business day.
+A payment in flight while the day is being closed is either counted in it or dated after
+it, never inside a sealed day.
+
 ### Monthly Closure
 
-Run on the 1st of each month. Requires all daily closures for the previous month:
+Run on the 1st of each month. Requires the closure of every business day of the month:
 
 ```typescript
 import { closeMonth } from 'caisseia';
@@ -211,45 +244,44 @@ const monthly = await closeMonth('ws-tenant-123', 2026, 5);
 // Aggregates all daily closures for May 2026
 ```
 
-### Annual Closure
+### Annual Closure (exercice)
 
-Run on January 1. Requires all monthly closures for the previous year:
+Run after the last month of the exercice is closed. `closeYear(ws, year)` closes the exercice
+that ends in `year`; it starts the month after the previous yearly closure (the first one: at
+the first month closure). Requires every month closure in between:
 
 ```typescript
 import { closeYear } from 'caisseia';
 
 const annual = await closeYear('ws-tenant-123', 2026);
-// Aggregates all monthly closures for 2026
+// Aggregates the month closures of the exercice ending in 2026
 ```
 
-### Automation Example (Node cron)
+### Scheduling Example (Node cron)
 
 ```typescript
 import cron from 'node-cron';
 import { closeDay, closeMonth, closeYear } from 'caisseia';
 
-// Daily at 00:05 UTC
+// Business date of the day that just ended (cut-off 00:00, time zone Europe/Paris).
+const businessDate = (d: Date) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(d);
+
+// Daily at 00:05 Paris time
 cron.schedule('5 0 * * *', async () => {
-  const yesterday = new Date();
-  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-  const dateStr = yesterday.toISOString().split('T')[0];
-  await closeDay('ws-tenant-123', dateStr);
-});
+  await closeDay('ws-tenant-123', businessDate(new Date(Date.now() - 12 * 3600_000)));
+}, { timezone: 'Europe/Paris' });
 
-// Monthly on the 1st at 00:30 UTC
+// Monthly on the 1st at 00:30 Paris time
 cron.schedule('30 0 1 * *', async () => {
-  const now = new Date();
-  const prevMonth = now.getUTCMonth(); // 0-indexed, so current = previous+1
-  const year = prevMonth === 0 ? now.getUTCFullYear() - 1 : now.getUTCFullYear();
-  const month = prevMonth === 0 ? 12 : prevMonth;
-  await closeMonth('ws-tenant-123', year, month);
-});
+  const [y, m] = businessDate(new Date(Date.now() - 12 * 3600_000)).split('-').map(Number);
+  await closeMonth('ws-tenant-123', y!, m!);
+}, { timezone: 'Europe/Paris' });
 
-// Annual on Jan 1 at 01:00 UTC
+// Yearly on 1 January at 01:00 Paris time (exercice ending in December)
 cron.schedule('0 1 1 1 *', async () => {
-  const prevYear = new Date().getUTCFullYear() - 1;
-  await closeYear('ws-tenant-123', prevYear);
-});
+  await closeYear('ws-tenant-123', new Date().getFullYear() - 1);
+}, { timezone: 'Europe/Paris' });
 ```
 
 ## 9. Export for DGFIP (Restitution)
@@ -270,7 +302,7 @@ const pdfExport = await exportPeriod('ws-tenant-123', '2026-01-01', '2026-12-31'
 
 // Each export includes a manifest with SHA-256 hashes
 // Verify offline (no DB access needed). Closure signatures are checked against
-// the TRUSTED registry (option, else NF525_KEY_REGISTRY_PATH), never skipped:
+// the TRUSTED registry (option, else CAISSEIA_KEY_REGISTRY_PATH), never skipped:
 const integrity = await verifyExportIntegrity(jsonExport, { keyRegistry: trustedRegistry });
 // integrity.valid === true if no tampering detected; false if the registry is empty
 //   or a signed chain head does not match the exported records, the signed closure
@@ -297,7 +329,7 @@ const report = await verifyChainIntegrity('ws-tenant-123');
 
 Hash links are checked on every stream; the Ed25519 signature of every closure
 (the only signed records) is checked against the key registry. The registry
-(`NF525_KEY_REGISTRY_PATH`, default bundled `keys/public-keys.json`) must list
+(`CAISSEIA_KEY_REGISTRY_PATH`, default bundled `keys/public-keys.json`) must list
 every signing key version ever used — an empty registry makes the check FAIL.
 Encaissement / correction / JET records are not signed one by one, but every
 closure (schema v2) signs the chain head of the `encaissement` and `jet`
@@ -319,10 +351,10 @@ first). Deleting or renumbering a closure and rechaining its stream fails with
 `closure chain broken at sequence N` (export: « Chaîne des clôtures rompue »).
 
 Elapsed days without closure: `report.error` (so `valid: false`) lists every
-elapsed day that has encaissement or JET records but no day closure
-(« elapsed day(s) with records but no day closure: YYYY-MM-DD »). Elapsed day =
-UTC calendar day strictly before `options.now` (default now); closures use UTC
-day bounds. Today is never an error. `verifyExportIntegrity(export, { now })`
+elapsed business day that has encaissement or JET records no day closure
+covers (« elapsed day(s) with records but no day closure: YYYY-MM-DD »).
+Elapsed day = business day (§ 8) ended before `options.now` (default now); the
+running day is never an error. Overlapping day closures are an error too. `verifyExportIntegrity(export, { now })`
 checks only the days lying entirely inside the export window. Every
 verification, export and closure writes a JET record, so a day with only that
 activity still needs its day closure: run `closeDay` for every day.
@@ -414,23 +446,18 @@ Log app-level technical events:
 import { logTechnicalEvent } from 'caisseia';
 
 // Log user login
-await logTechnicalEvent({
-  workspaceId: 'ws-tenant-123',
-  type: 'user_login',
-  operateurId: 'user-42',
-  details: { ip: req.ip },
-});
+await logTechnicalEvent('ws-tenant-123', 'user_login', {}, { userId: 'user-42', sourceIp: '192.168.1.1' });
 
 // Log configuration change
-await logTechnicalEvent({
-  workspaceId: 'ws-tenant-123',
-  type: 'config_change',
-  operateurId: 'admin-1',
-  details: { field: 'tva_rates', oldValue: '20', newValue: '20,10' },
-});
+await logTechnicalEvent(
+  'ws-tenant-123',
+  'config_changed',
+  { field: 'tva_rates', oldValue: 'TVA20', newValue: 'TVA20,TVA10' },
+  { userId: 'admin-1' },
+);
 ```
 
-Supported event types: `system_start`, `system_stop`, `user_login`, `user_logout`, `config_change`, `mutation_rejected`, `export_requested`, `export_completed`, `closure_triggered`, `error`, `degraded_mode_enter`, `degraded_mode_exit`.
+Supported event types: `system_boot`, `system_shutdown`, `config_changed`, `tva_rate_changed`, `signing_key_rotated`, `user_login`, `user_logout`, `user_login_failed`, `encaissement_recorded`, `correction_recorded`, `mutation_attempt_refused`, `closure_day_initiated`, `closure_day_completed`, `closure_month_initiated`, `closure_month_completed`, `closure_year_initiated`, `closure_year_completed`, `export_requested`, `export_completed`, `integrity_check_run`, `integrity_check_failed`, `degraded_mode_enter`, `degraded_mode_exit`, `manual_entry_injected`, `business_calendar_set`, `payment_method_config_changed`, `operator_config_changed`, `error_application`, `error_compliance`.
 
 ## 14. Error Handling
 
@@ -438,14 +465,13 @@ All CAISSEIA functions throw on validation failure (Zod parse errors). Wrap call
 
 ```typescript
 try {
-  await recordEncaissement(input);
+  await recordEncaissement(workspaceId, input);
 } catch (error) {
   if (error instanceof z.ZodError) {
-    // Validation failed — do NOT proceed, log to JET
-    await logTechnicalEvent({
-      workspaceId,
-      type: 'mutation_rejected',
-      details: { reason: error.message, input },
+    // Validation failed — do NOT proceed, log to JET (no raw input: it may hold personal data)
+    await logTechnicalEvent(workspaceId, 'error_application', {
+      reason: 'encaissement input refused',
+      issues: error.issues.map((i) => i.path.join('.')),
     });
   }
   throw error; // Re-throw — the encaissement did NOT happen
@@ -454,17 +480,23 @@ try {
 
 ## 15. Testing in Consumer Apps
 
-For tests, use in-memory storage and signer:
+The SDK never falls back to an in-memory register on its own: with no storage
+configured, every call throws `NF525_STORAGE_NOT_CONFIGURED`. For tests, inject
+the in-memory storage and signer on purpose (in-memory refuses `{ client }`:
+it has no transactions):
 
 ```typescript
 import { setActiveStorage, InMemoryStorage, setActiveSigner } from 'caisseia';
-import { MemorySigner } from 'caisseia/dist/src/crypto/Signer.js';
+import { MemorySigner } from 'caisseia/core';
 
-beforeEach(() => {
+beforeEach(async () => {
   setActiveStorage(new InMemoryStorage());
-  setActiveSigner(new MemorySigner());
+  setActiveSigner(await MemorySigner.generate('test-v1'));
 });
 ```
+
+For a demo without Postgres: `await initialize({ storage: 'memory', defaultCurrency: 'EUR', tvaRates: [] })`
+(a one-time warning says the records do not survive a restart).
 
 ---
 
@@ -474,9 +506,9 @@ beforeEach(() => {
 |-----------|----------|-----------|
 | Record payment | `recordEncaissement()` | Every transaction |
 | Record refund | `recordCorrection()` | Every correction |
-| Daily closure | `closeDay()` | Daily (automated) |
-| Monthly closure | `closeMonth()` | Monthly (automated) |
-| Annual closure | `closeYear()` | Annually (automated) |
+| Daily closure | `closeDay()` | Daily (scheduled) |
+| Monthly closure | `closeMonth()` | Monthly (scheduled) |
+| Annual closure | `closeYear()` | Annually (scheduled) |
 | Export data | `exportPeriod()` | On demand / inspector request |
 | Verify integrity | `verifyChainIntegrity()` | Monthly (recommended) |
 | Generate attestation | `generateAttestation()` | Per workspace onboarding |

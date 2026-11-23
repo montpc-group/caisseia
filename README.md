@@ -5,11 +5,11 @@
 > Registre inaltérable des encaissements pour les logiciels de caisse
 > Inaltérabilité, sécurisation, conservation, archivage
 
-Conçu pour les conditions d'inaltérabilité, de sécurisation, de conservation et d'archivage de l'article 286, I, 3° bis du CGI. Ce logiciel n'est pas certifié NF525 ; MONTPC délivre une attestation éditeur pour les versions qu'elle publie (voir ATTESTATION.md).
+Conçu pour les conditions d'inaltérabilité, de sécurisation, de conservation et d'archivage de l'article 286, I, 3° bis du CGI. Ce logiciel n'est pas certifié NF525. MONTPC prévoit de délivrer une attestation éditeur pour les versions qu'elle publie ; aucune n'est signée à ce jour (voir ATTESTATION.md).
 
 Projet open source indépendant, sans lien avec la DGFiP ni l'administration fiscale.
 
-**Statut** : v1.0.0-rc.3 (release candidate)
+**Statut** : v1.0.0-rc.7 (release candidate) ; aucune attestation éditeur n'est signée à ce jour
 **Éditeur** : MONTPC SASU · SIRET 993 766 369 00010
 
 ## Install (npm — once published)
@@ -28,10 +28,10 @@ See [`docs/INTEGRATION.md`](./docs/INTEGRATION.md) for the full step-by-step gui
 
 **Key registry required for verification** : `verifyChainIntegrity(workspaceId, { keyRegistry? })`,
 `verifyExportIntegrity(export, { keyRegistry? })` and the `caisseia-verify-integrity` CLI verify every
-closure signature against the public-key registry (option, else `NF525_KEY_REGISTRY_PATH`, else the
+closure signature against the public-key registry (option, else `CAISSEIA_KEY_REGISTRY_PATH`, else the
 bundled `keys/public-keys.json`). An empty or missing registry is a FAILURE, never a skipped check.
 
-**Closures sign chain heads (closure schema v2, NF-11)** : every closure (day / month / year) signs,
+**Closures sign chain heads (closure schema v2+, NF-11; v3 also signs the business period key and calendar)** : every closure (day / month / year) signs,
 with its totals, the chain head of the `encaissement` stream (encaissements + corrections) and of the
 `jet` stream: sequence + hash of the last record recorded at or before the period end. Both
 verifiers recompute each chain and check that the record at every signed sequence has exactly the
@@ -46,8 +46,9 @@ later or equal period end covers them. Check `fullyVerified`, not only `valid`.
 verifiers check that signed link against the store link, end to end: deleting a closure and
 renumbering + rechaining the closure stream is detected (`closure chain broken`). Both verifiers also
 raise an ERROR (`valid: false`, never a warning) for every **elapsed day** that has encaissement or
-JET records but no day closure. Elapsed day = UTC calendar day strictly before the verification date
-(closures use UTC day bounds, 00:00:00.000Z → 23:59:59.999Z); today is never an error. The date is
+JET records that no day closure covers. Elapsed day = business day (local civil day of the business,
+default Europe/Paris, from its cut-off hour; see docs/INTEGRATION.md § 8) ended before the verification
+date; the running day is never an error. Two day closures that overlap are an error too. The date is
 `options.now` (default: now). `verifyExportIntegrity` checks only the days lying entirely inside the
 export window. Consequence for integrators: **close every day that has any record**, JET included
 (a verification, an export or a closure run writes a JET record on the day it runs).
@@ -97,7 +98,7 @@ Rationale: every major EU regime (DE TSE, ES VeriFactu, IT RT, PT ATCUD, AT RKSV
 
 ## Pourquoi ce package existe
 
-L'article 286 I 3°bis du CGI impose à toute entreprise assujettie à la TVA qui utilise un logiciel d'enregistrement des paiements clients de respecter quatre conditions techniques : **inaltérabilité, sécurisation, conservation, archivage**. La preuve de conformité passe par un certificat d'organisme accrédité (INFOCERT/AFNOR ou LNE), ou — depuis le rétablissement par la Loi de Finances 2026 art. 125, applicable depuis le 21 février 2026 — par une **attestation individuelle de l'éditeur**.
+L'article 286 I 3°bis du CGI impose à toute entreprise assujettie à la TVA qui utilise un logiciel d'enregistrement des paiements clients de respecter quatre conditions techniques : **inaltérabilité, sécurisation, conservation, archivage**. La preuve de conformité passe par un certificat d'organisme accrédité (INFOCERT/AFNOR ou LNE), ou — depuis son rétablissement par la loi de finances pour 2026 (art. 125), applicable depuis le 21 février 2026 — par une **attestation individuelle de l'éditeur**.
 
 Ce package met en œuvre ces quatre conditions dans une brique réutilisable par tout logiciel qui enregistre des encaissements.
 

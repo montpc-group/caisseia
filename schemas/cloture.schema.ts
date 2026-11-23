@@ -21,8 +21,36 @@ import { z } from 'zod';
  * `previousClosureHash` (hash of the previous closure record of the same
  * stream, GENESIS_HASH for the first one: the closure chain).
  * v1 closures (no schemaVersion) are still read and reported as legacy.
+ *
+ * v3 (rc.7, business days): also signs `periodKey` (business day YYYY-MM-DD,
+ * month YYYY-MM, exercice = its last month YYYY-MM) and the `calendar` used.
+ * periodStart/periodEnd stay UTC instants; the label is periodKey, not the
+ * UTC date of periodStart. v2 closures still parse and verify.
  */
-export const CLOSURE_SCHEMA_VERSION = 2;
+export const CLOSURE_SCHEMA_VERSION = 3;
+
+const VALID_TIME_ZONE = (tz: string): boolean => {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** How a workspace groups records into closure periods (see src/calendar.ts). */
+export const BusinessCalendarSchema = z
+  .object({
+    /** IANA time zone of the business (e.g. Europe/Paris, America/Martinique). */
+    timeZone: z.string().min(1).refine(VALID_TIME_ZONE, { message: 'unknown IANA time zone' }),
+    /** Local hour a business day starts (HH:MM, 24 h). */
+    dayCutoff: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    /** Month (1..12) the exercice ends with. */
+    fiscalYearEndMonth: z.number().int().min(1).max(12),
+  })
+  .strict();
+
+export type BusinessCalendar = z.infer<typeof BusinessCalendarSchema>;
 
 /** Streams whose chain head a closure signs. */
 export const CHAIN_HEAD_STREAMS = ['encaissement', 'jet'] as const;
@@ -80,10 +108,12 @@ export const ClosurePayloadSchema = z
     periodEnd: z.string().datetime({ offset: true }),
     closedAt: z.string().datetime({ offset: true }),
     aggregate: ClosureAggregateSchema,
-    // Optional only so v1 (legacy) closures still parse; v2 closures always set both.
-    schemaVersion: z.literal(CLOSURE_SCHEMA_VERSION).optional(),
+    // Optional only so v1 (legacy) closures still parse; v2+ closures always set them.
+    schemaVersion: z.union([z.literal(2), z.literal(CLOSURE_SCHEMA_VERSION)]).optional(),
     chainHeads: ChainHeadsSchema.optional(),
     previousClosureHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    periodKey: z.string().regex(/^\d{4}-\d{2}(-\d{2})?$/).optional(),
+    calendar: BusinessCalendarSchema.optional(),
     signature: z.string().min(1),
     signingKeyVersion: z.string().min(1),
   })
@@ -96,6 +126,10 @@ export const ClosurePayloadSchema = z
       (v.schemaVersion === undefined) === (v.chainHeads === undefined) &&
       (v.schemaVersion === undefined) === (v.previousClosureHash === undefined),
     { message: 'schemaVersion, chainHeads et previousClosureHash sont présents ensemble (v2) ou absents (v1 legacy)' },
+  )
+  .refine(
+    (v) => (v.schemaVersion === 3) === (v.periodKey !== undefined) && (v.schemaVersion === 3) === (v.calendar !== undefined),
+    { message: 'periodKey et calendar sont présents ssi schemaVersion = 3' },
   );
 
 export type ClosurePayloadZ = z.infer<typeof ClosurePayloadSchema>;

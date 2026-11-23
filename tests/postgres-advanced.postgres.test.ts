@@ -8,7 +8,7 @@
  * ici le retry-on-conflict (AppendConflictError / code 23505) est
  * exercé sous contention réelle avec des connexions parallèles.
  *
- * Skipped si Docker indisponible (NF525_SKIP_POSTGRES=1).
+ * Skipped si Docker indisponible (CAISSEIA_SKIP_POSTGRES=1).
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -27,8 +27,9 @@ import { exportPeriod, verifyExportIntegrity } from '../src/restitution.js';
 import { read } from '../src/eventStore.js';
 import { hash, canonicalize } from '../src/crypto.js';
 import type { EncaissementStreamPayload } from '../schemas/encaissement.schema.js';
+import { readEnv } from '../src/env.js';
 
-const SKIP = process.env['NF525_SKIP_POSTGRES'] === '1';
+const SKIP = readEnv('SKIP_POSTGRES') === '1';
 
 interface Ctx {
   superuserUrl: string;

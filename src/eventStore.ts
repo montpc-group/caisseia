@@ -10,7 +10,7 @@
 
 import { hash, canonicalize, GENESIS_HASH } from './crypto.js';
 import { getActiveStorage } from './storage/index.js';
-import { AppendConflictError, type TxOptions } from './storage/EventStorage.js';
+import { AppendConflictError, type EventStorage, type TxOptions } from './storage/EventStorage.js';
 
 const APPEND_MAX_RETRIES = 3;
 
@@ -33,41 +33,20 @@ export async function append<T>(
   opts: TxOptions = {},
 ): Promise<EventRecord<T>> {
   const storage = await getActiveStorage();
-  const attempts = opts.client ? 1 : APPEND_MAX_RETRIES;
+  if (opts.client) return appendOnce(storage, stream, workspaceId, payload, opts);
 
+  // Without a caller client the read-hash-insert step runs under the stream
+  // lock, in a short SDK transaction: every SDK writer of a stream is then
+  // serialized by the same lock, and recordedAt is taken under it (a closure
+  // holding the lock is never overtaken by a record dated inside its period).
+  // The retry covers writers that do not take the lock (older SDK versions).
   let lastErr: unknown;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const last = await storage.getLast<T>(workspaceId, stream, opts);
-    const sequence = (last?.sequence ?? 0) + 1;
-    const previousHash = last?.hash ?? GENESIS_HASH;
-    const recordedAt = new Date().toISOString();
-
-    const skeleton = {
-      _id: makeRecordId(workspaceId, stream, sequence),
-      stream,
-      sequence,
-      workspaceId,
-      previousHash,
-      recordedAt,
-      payload,
-    };
-    const ownHash = hash(canonicalize(skeleton));
-
+  for (let attempt = 0; attempt < APPEND_MAX_RETRIES; attempt++) {
     try {
-      const record = await storage.append<T>({
-        workspaceId,
-        stream,
-        sequence,
-        previousHash,
-        hash: ownHash,
-        recordedAt,
-        payload,
-      }, opts);
-      return record;
+      return await storage.withStreamLock(workspaceId, stream, (tx) => appendOnce(storage, stream, workspaceId, payload, tx));
     } catch (err) {
-      if (err instanceof AppendConflictError && !opts.client) {
+      if (err instanceof AppendConflictError) {
         lastErr = err;
-        // Concurrent writer claimed our sequence; retry with refreshed previous.
         // (No JET log here to avoid recursion — consumers can observe via metrics.)
         continue;
       }
@@ -78,6 +57,40 @@ export async function append<T>(
     `NF525_APPEND: failed after ${APPEND_MAX_RETRIES} retries on (workspace=${workspaceId}, stream=${stream})` +
       (lastErr instanceof Error ? `: ${lastErr.message}` : ''),
   );
+}
+
+async function appendOnce<T>(
+  storage: EventStorage,
+  stream: StreamName,
+  workspaceId: string,
+  payload: T,
+  opts: TxOptions,
+): Promise<EventRecord<T>> {
+  const last = await storage.getLast<T>(workspaceId, stream, opts);
+  const sequence = (last?.sequence ?? 0) + 1;
+  const previousHash = last?.hash ?? GENESIS_HASH;
+  const recordedAt = new Date().toISOString();
+
+  const skeleton = {
+    _id: makeRecordId(workspaceId, stream, sequence),
+    stream,
+    sequence,
+    workspaceId,
+    previousHash,
+    recordedAt,
+    payload,
+  };
+  const ownHash = hash(canonicalize(skeleton));
+
+  return storage.append<T>({
+    workspaceId,
+    stream,
+    sequence,
+    previousHash,
+    hash: ownHash,
+    recordedAt,
+    payload,
+  }, opts);
 }
 
 /**

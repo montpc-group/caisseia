@@ -199,17 +199,19 @@ export async function verifyClosureSignature(
     schemaVersion?: number;
     chainHeads?: unknown;
     previousClosureHash?: string;
+    periodKey?: string;
+    calendar?: unknown;
     signature: string;
     signingKeyVersion: string;
   },
   registry: KeyRegistry,
 ): Promise<string | null> {
-  // v2 signs schemaVersion + chainHeads + previousClosureHash too; on v1 they are undefined and
-  // canonicalize drops them, so legacy signatures still verify.
-  const { type, periodStart, periodEnd, closedAt, aggregate, schemaVersion, chainHeads, previousClosureHash } = payload;
+  // v2 signs schemaVersion + chainHeads + previousClosureHash too, v3 periodKey + calendar; fields
+  // a version lacks are undefined and canonicalize drops them, so older signatures still verify.
+  const { type, periodStart, periodEnd, closedAt, aggregate, schemaVersion, chainHeads, previousClosureHash, periodKey, calendar } = payload;
   try {
     const ok = await verifySignature(
-      canonicalize({ type, periodStart, periodEnd, closedAt, aggregate, schemaVersion, chainHeads, previousClosureHash }),
+      canonicalize({ type, periodStart, periodEnd, closedAt, aggregate, schemaVersion, chainHeads, previousClosureHash, periodKey, calendar }),
       payload.signature,
       payload.signingKeyVersion,
       registry,

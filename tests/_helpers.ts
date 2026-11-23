@@ -6,6 +6,7 @@
  * so state isolation is explicit. No global mutable state leaks across files.
  */
 
+import { vi } from 'vitest';
 import { InMemoryStorage, setActiveStorage, _resetActiveStorage } from '../src/storage/index.js';
 import { MemorySigner } from '../src/crypto/MemorySigner.js';
 import { setActiveSigner, _resetActiveSigner } from '../src/crypto/Signer.js';
@@ -49,6 +50,17 @@ export async function freshHarness(workspace = 'ws-test'): Promise<Harness> {
       _resetActiveStorage();
       _resetActiveSigner();
       _setRegistryForTests(null);
+      vi.useRealTimers();
     },
   };
+}
+
+/**
+ * Moves the clock (Date only, timers stay real) to `at`: a day can be closed
+ * only once it has started, so tests that seal later days travel there first.
+ * Records written afterwards are dated from `at` on. reset() restores the clock.
+ */
+export function travelTo(at: Date | string): void {
+  if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(at));
 }

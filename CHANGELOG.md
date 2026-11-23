@@ -15,6 +15,40 @@ Chaque entrée suit cette structure :
 
 ---
 
+## [1.0.0-rc.7] — 2026-11-23
+
+**Type** : MAJOR — contenu signé des clôtures (schéma v3), périodes en jours ouvrés locaux, registre en mémoire sur choix explicite. Chaînage des enregistrements inchangé ; les clôtures v1/v2 se lisent et se vérifient comme avant. Une attestation éditeur devra viser cette version ou une suivante.
+
+- **Jours ouvrés locaux** : un jour de clôture est le jour civil LOCAL du commerce — fuseau IANA, défaut `Europe/Paris` (DOM : fuseau local), de l'heure de coupure (défaut 00:00, ex. 05:00 pour un bar) à la coupure suivante ; jours de 23 h / 25 h aux changements d'heure. Les horodatages restent en UTC ; seul le regroupement est local. Mensuel = mois civil à cette coupure ; annuel = exercice, clos au mois de fin d'exercice (défaut décembre ; premier exercice court ou long : depuis la première clôture mensuelle).
+- `setBusinessCalendar(workspaceId, { timeZone?, dayCutoff?, fiscalYearEndMonth? }, { client? })` : changement consigné au JET (`business_calendar_set`), effectif le lendemain de la dernière clôture journalière, jamais rétroactif. `getBusinessCalendar(workspaceId, date?)`, `DEFAULT_CALENDAR`.
+- Un workspace qui a déjà des clôtures journalières v1/v2 (bornes UTC) et n'a jamais fixé de calendrier reste en UTC 00:00 (non rétroactif) ; il passe à l'heure locale par `setBusinessCalendar`.
+- `closeDay(workspaceId, date)` : `date` = `'YYYY-MM-DD'` (jour ouvré) ou une `Date` = le jour ouvré qui contient cet instant. Un jour pas encore commencé est refusé (`NF525_CLOSURE … has not started`). Un jour clos avant sa fin calendaire se termine à l'instant de la clôture ; la suite du jour appartient au jour suivant.
+- **Clôture vs paiement en cours** : `closeDay` prend le verrou du flux `encaissement` avant sa première entrée JET et avant de lire le jour (ordre unique : clôture → encaissement → JET). Un paiement validé avant est compté ; un paiement en cours est attendu puis compté ; un paiement commencé après est daté après la clôture et tombe dans la période suivante — jamais dans un jour déjà scellé. Test Postgres dédié.
+- Sans `{ client }`, chaque écriture prend le verrou de son flux dans une courte transaction du SDK (l'horodatage est pris sous le verrou) ; chaque clôture s'exécute dans une transaction (celle de l'appelant ou celle du SDK) : une clôture refusée ne laisse plus son entrée JET « initiated ».
+- **Clôtures schéma v3** : signent aussi `periodKey` (jour `YYYY-MM-DD`, mois `YYYY-MM`, exercice = son dernier mois `YYYY-MM`) et le `calendar` utilisé. `periodStart` / `periodEnd` restent des instants UTC ; le libellé d'une période est `periodKey`, plus la date UTC de `periodStart` (une app qui identifie les clôtures par `periodStart.slice(0, 10)` doit lire `periodKey`). `getYearClosure(ws, année)` = l'exercice qui se termine cette année-là.
+- Intégrité : un jour ouvré écoulé dont des enregistrements ne sont couverts par aucune clôture journalière est une erreur ; deux clôtures journalières qui se chevauchent aussi (chaque opération dans exactement une période close).
+- Variables d'environnement `CAISSEIA_*` (`DATABASE_URL`, `STORAGE`, `SIGNER`, `SIGNING_KEY_PATH`, `SIGNING_KEY_VERSION`, `KEY_REGISTRY_PATH`, `SKIP_POSTGRES`) ; les noms `NF525_*` restent lus en repli avec un avertissement unique par nom (`CAISSEIA_ENV_DEPRECATED`). Codes d'erreur, table `nf525_event`, déclencheurs et rôle inchangés.
+- README : « Ce logiciel n'est pas certifié NF525. MONTPC prévoit de délivrer une attestation éditeur pour les versions qu'elle publie ; aucune n'est signée à ce jour (voir ATTESTATION.md). » ; loi de finances pour 2026 (art. 125), applicable depuis le 21 février 2026. `ATTESTATION.md` devient un modèle (ni date, ni bloc de signature).
+
+- Plus de registre en mémoire silencieux : sans stockage configuré, tout appel lève `NF525_STORAGE_NOT_CONFIGURED`. En mémoire seulement sur choix explicite (`initialize({ storage: 'memory' })` ou `CAISSEIA_STORAGE=memory`), avec un avertissement unique par processus (enregistrements perdus au redémarrage). `databaseUrl` n'est plus requis avec `storage: 'memory'`.
+- `InMemoryStorage` refuse `{ client }` (pas de transactions) au lieu de l'ignorer.
+- CLI `caisseia-verify-integrity` : Postgres par défaut, comme documenté (vérifiait auparavant un registre en mémoire vide).
+- `docs/INTEGRATION.md` : exemples alignés sur les vraies signatures et les schémas stricts (`recordEncaissement(workspaceId, input)`, `mode: 'cb'`, `tvaCode: 'TVA20'`, `devise`, `reason`, `operatorId`), liste des types JET = l'enum ; un test extrait les exemples et les valide.
+- Rappel rc.5 (rupture pour les stockages tiers) : `EventStorage.withStreamLock` est requis, et `append` / `read` / `getLast` doivent transmettre `opts` (`{ client }`). Une implémentation maison (ex. routage multi-tenant) qui ne le fait pas échoue au typage et fait lever `recordCorrection` à l'exécution.
+
+---
+
+## [1.0.0-rc.6] — 2026-11-23
+
+**Type** : renommage (aucun changement de code, du chaînage ni du contenu signé).
+
+- Nom npm `caisseia` ; CLI `caisseia-verify-integrity`, `caisseia-generate-attestation` ; nom affiché « CAISSEIA », ligne « CAISSEIA — Caisse · Inaltérabilité · Archivage » sous le titre du README et dans la description npm.
+- `homepage` : https://caisseia.fr ; `repository` / `bugs` retirés.
+- PDF d'attestation : logiciel « CAISSEIA (caisseia) ».
+- Formulations reprises selon la règle de nommage (aucun qualificatif d'autonomie à propos du moteur).
+
+---
+
 ## [1.0.0-rc.5] — 2026-11-23
 
 **Type** : MINOR (API additive) + correctif. Aucun changement du contenu signé ni du chaînage.
@@ -105,7 +139,7 @@ Chaque entrée suit cette structure :
 
 ### Milestone 5 — code review, integration guide (2026-05-18)
 
-- `docs/INTEGRATION.md` — step-by-step consumer app integration guide (initialize, encaissement, corrections, closures automation, export, integrity, attestation, UI requirements)
+- `docs/INTEGRATION.md` — step-by-step consumer app integration guide (initialize, encaissement, corrections, closures scheduling, export, integrity, attestation, UI requirements)
 - Full code compliance review across all src/*.ts files
 - README.md updated: status reflects v1.0.0-rc (code complete, pending attestation signing)
 - Total suite: 75 pass / 0 todo / 0 fail (unchanged — M5 is non-code)

@@ -21,6 +21,7 @@
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve as resolvePath } from 'node:path';
+import { readEnv } from '../env.js';
 
 export interface PublicKeyEntry {
   version: string;
@@ -44,10 +45,10 @@ function defaultRegistryPath(): string {
   return resolvePath(here, '..', '..', 'keys', 'public-keys.json');
 }
 
-/** Load the registry from disk (cached). Path overridable via NF525_KEY_REGISTRY_PATH. */
+/** Load the registry from disk (cached). Path overridable via CAISSEIA_KEY_REGISTRY_PATH. */
 export async function loadRegistry(path?: string): Promise<KeyRegistry> {
   if (testOverride) return testOverride;
-  const p = path ?? process.env['NF525_KEY_REGISTRY_PATH'] ?? defaultRegistryPath();
+  const p = path ?? readEnv('KEY_REGISTRY_PATH') ?? defaultRegistryPath();
   if (cached && cachedPath === p) return cached;
   try {
     const raw = await fs.readFile(p, 'utf-8');

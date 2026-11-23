@@ -14,7 +14,9 @@ import { read } from './eventStore.js';
 import type { StreamName, EventRecord } from './eventStore.js';
 import { logTechnicalEvent } from './jet.js';
 import type { TxOptions } from './storage/EventStorage.js';
-import { CHAIN_HEAD_STREAMS, type ChainHeads } from '../schemas/cloture.schema.js';
+import { CHAIN_HEAD_STREAMS, type ChainHeads, type ClosurePayloadZ } from '../schemas/cloture.schema.js';
+import type { JetPayloadZ } from '../schemas/jet.schema.js';
+import { timelineFrom, dayKey, shiftDate } from './calendar.js';
 
 const CHECKED_STREAMS: StreamName[] = [
   'encaissement',
@@ -31,7 +33,7 @@ const CHECKED_STREAMS: StreamName[] = [
  * signature Ed25519 de chaque clôture contre le registre de clés.
  *
  * Le registre est `options.keyRegistry` sinon le registre chargé
- * (NF525_KEY_REGISTRY_PATH / keys/public-keys.json). Registre absent ou
+ * (CAISSEIA_KEY_REGISTRY_PATH / keys/public-keys.json). Registre absent ou
  * vide → rapport invalide (`error`), jamais de vérification ignorée.
  *
  * `options.client` : lectures et entrée JET sur la connexion de l'appelant,
@@ -64,13 +66,19 @@ export async function verifyChainIntegrity(
     streamReports.push(r);
   }
 
+  const dayClosures = byStream['closure-day']! as EventRecord<ClosurePayloadZ>[];
   const unclosed = elapsedDaysWithoutClosure(
     [...byStream['encaissement']!, ...byStream['jet']!],
-    byStream['closure-day']! as EventRecord<{ periodStart: string }>[],
+    dayClosures,
+    byStream['jet']! as EventRecord<JetPayloadZ>[],
     now,
   );
   if (unclosed.length) {
     errors.push(`NF525_INTEGRITY: elapsed day(s) with records but no day closure: ${unclosed.join(', ')}`);
+  }
+  const overlaps = overlappingDayClosures(dayClosures);
+  if (overlaps.length) {
+    errors.push(`NF525_INTEGRITY: day closures overlap (a record would sit in two closed periods): ${overlaps.join(', ')}`);
   }
   const error = errors.length ? errors.join(' | ') : undefined;
   const valid = !error && streamReports.every((s) => s.valid);
@@ -231,27 +239,67 @@ export function chainHeadFailures(
 }
 
 /**
- * NF-11: elapsed days (UTC calendar day strictly before `now`'s UTC day — the
- * closures' own UTC day bounds) with encaissement/JET records but no day
- * closure. Deleting the newest day closure leaves exactly that. `window`
+ * NF-11: elapsed business days with encaissement/JET records that no day
+ * closure covers. A record is covered when it sits inside a day closure's
+ * [periodStart, periodEnd]; an uncovered one belongs to its business day
+ * (src/calendar.ts), or to the next one when that day was closed before it
+ * was recorded, and is an error once that day's calendar end is before
+ * `now`. Deleting the newest day closure leaves exactly that. `window`
  * (export): only days entirely inside [from, to] are checkable.
  */
 export function elapsedDaysWithoutClosure(
   records: { recordedAt: string }[],
-  dayClosures: EventRecord<{ periodStart: string }>[],
+  dayClosures: EventRecord<ClosurePayloadZ>[],
+  jet: EventRecord<JetPayloadZ>[],
   now: Date,
   window?: { from: string; to: string },
 ): string[] {
-  const today = now.toISOString().slice(0, 10);
-  const closed = new Set(dayClosures.map((c) => c.payload.periodStart.slice(0, 10)));
+  const timeline = timelineFrom(jet, dayClosures);
+  const periods = dayClosures
+    .map((c) => [Date.parse(c.payload.periodStart), Date.parse(c.payload.periodEnd)] as const)
+    .sort((a, b) => a[0] - b[0]);
+  const closed = new Set(dayClosures.map(dayKey));
   const days = new Set<string>();
   for (const r of records) {
-    const d = new Date(r.recordedAt).toISOString().slice(0, 10);
-    if (d >= today || closed.has(d)) continue;
-    if (window && (`${d}T00:00:00.000Z` < window.from || `${d}T23:59:59.999Z` > window.to)) continue;
+    const t = Date.parse(r.recordedAt);
+    const p = periods[lastStartingAtOrBefore(periods, t)];
+    if (p && t <= p[1]) continue;
+    let d = timeline.dayOf(t);
+    while (closed.has(d)) d = shiftDate(d, 1);
+    if (timeline.end(d) >= now.getTime()) continue;
+    if (window && (timeline.start(d) < Date.parse(window.from) || timeline.end(d) > Date.parse(window.to))) continue;
     days.add(d);
   }
   return [...days].sort();
+}
+
+/** Index of the last period starting at or before `t` (-1 if none); `periods` sorted by start. */
+function lastStartingAtOrBefore(periods: (readonly [number, number])[], t: number): number {
+  let lo = 0;
+  let hi = periods.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (periods[mid]![0] <= t) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
+/** One-closed-period invariant: day closures whose periods overlap (by business day). */
+export function overlappingDayClosures(dayClosures: EventRecord<ClosurePayloadZ>[]): string[] {
+  const sorted = [...dayClosures].sort((a, b) => Date.parse(a.payload.periodStart) - Date.parse(b.payload.periodStart));
+  const out: string[] = [];
+  for (let i = 1; i < sorted.length; i++) {
+    if (Date.parse(sorted[i]!.payload.periodStart) <= Date.parse(sorted[i - 1]!.payload.periodEnd)) {
+      out.push(`${dayKey(sorted[i - 1]!)} / ${dayKey(sorted[i]!)}`);
+    }
+  }
+  return out;
 }
 
 /**

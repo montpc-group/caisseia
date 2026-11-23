@@ -22,7 +22,7 @@ import { MemorySigner } from '../src/crypto/MemorySigner.js';
 import { setActiveSigner, _resetActiveSigner } from '../src/crypto/Signer.js';
 import { _setRegistryForTests } from '../src/crypto/keyRegistry.js';
 import { AppendConflictError } from '../src/storage/EventStorage.js';
-import { freshHarness, type Harness } from './_helpers.js';
+import { freshHarness, travelTo, type Harness } from './_helpers.js';
 import type { EncaissementStreamPayload } from '../schemas/encaissement.schema.js';
 
 // ─────────────────────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ describe('Concurrency (séquence contiguë sous contention)', () => {
 // § TIMEZONE / DST — bornes UTC strictes (COMPLIANCE.md § 4)
 // ─────────────────────────────────────────────────────────────────────
 
-describe('Timezone boundaries (bornes UTC — art. 286 I 3°bis)', () => {
+describe('Timezone boundaries (jour ouvré local, bornes UTC — art. 286 I 3°bis)', () => {
   let h: Harness;
 
   beforeEach(async () => {
@@ -120,11 +120,9 @@ describe('Timezone boundaries (bornes UTC — art. 286 I 3°bis)', () => {
     await h.reset();
   });
 
-  // NOTE: Le module utilise des bornes UTC strictes :
-  //   startISO = YYYY-MM-DDT00:00:00.000Z
-  //   endISO   = YYYY-MM-DDT23:59:59.999Z
-  // Les apps consommatrices doivent convertir leur fuseau local en UTC
-  // avant d'appeler closeDay. Le module NE fait PAS de conversion TZ.
+  // NOTE: un jour ouvré est le jour civil LOCAL du commerce (défaut
+  // Europe/Paris, coupure 00:00) ; les bornes signées sont des instants UTC.
+  // En hiver (UTC+1) : startISO = J-1T23:00:00.000Z, endISO = JT22:59:59.999Z.
 
   it('closeDay à 23:59:59.999 UTC — inclut la journée correcte', async () => {
     // AUDIT: Un encaissement à la dernière milliseconde d'un jour UTC
@@ -153,31 +151,34 @@ describe('Timezone boundaries (bornes UTC — art. 286 I 3°bis)', () => {
     expect(futureClosure.aggregate.caTotalCentimes).toBe(0);
   });
 
-  it('closeDay à 00:00:00.000 UTC — boundary inclusion', async () => {
+  it('closeDay à 00:00:00.000 UTC — jour ouvré Paris qui contient cet instant', async () => {
     // AUDIT: La borne inférieure est inclusive. Un encaissement enregistré
     // exactement à minuit UTC doit être inclus dans la clôture du jour commençant.
     const midnight = new Date(Date.UTC(2027, 0, 1, 0, 0, 0, 0));
     // We use closeDay to test the boundary range definition.
+    travelTo('2027-01-02T00:00:00Z');
     const closure = await closeDay(h.workspace, midnight);
     // With no encaissements, the closure is valid with zero totals.
     expect(closure.aggregate.caTotalCentimes).toBe(0);
-    expect(closure.periodStart).toBe('2027-01-01T00:00:00.000Z');
-    expect(closure.periodEnd).toBe('2027-01-01T23:59:59.999Z');
+    expect(closure.periodKey).toBe('2027-01-01');
+    expect(closure.periodStart).toBe('2026-12-31T23:00:00.000Z');
+    expect(closure.periodEnd).toBe('2027-01-01T22:59:59.999Z');
   });
 
-  it('la borne de clôture journalière est [00:00:00.000Z, 23:59:59.999Z] — pas de chevauchement', async () => {
+  it('deux jours ouvrés consécutifs sont contigus — pas de chevauchement', async () => {
     // AUDIT: Deux jours consécutifs ne doivent JAMAIS se chevaucher.
     // startISO(day2) > endISO(day1) strictement.
     const day1 = new Date(Date.UTC(2027, 2, 14));
     const day2 = new Date(Date.UTC(2027, 2, 15));
+    travelTo('2027-03-16T00:00:00Z');
 
     const c1 = await closeDay(h.workspace, day1);
     const c2 = await closeDay(h.workspace, day2);
 
     expect(c1.periodEnd < c2.periodStart).toBe(true);
-    // More precisely: day1 ends at 23:59:59.999Z, day2 starts at 00:00:00.000Z.
-    expect(c1.periodEnd).toBe('2027-03-14T23:59:59.999Z');
-    expect(c2.periodStart).toBe('2027-03-15T00:00:00.000Z');
+    // More precisely: day1 ends at 23:59:59.999 Paris, day2 starts at 00:00 Paris (UTC+1 in March before DST).
+    expect(c1.periodEnd).toBe('2027-03-14T22:59:59.999Z');
+    expect(c2.periodStart).toBe('2027-03-14T23:00:00.000Z');
   });
 });
 
@@ -473,6 +474,7 @@ describe('Zero-record edge cases (périodes vides)', () => {
     // Le Grand Total (cumul perpétuel) doit être reporté du jour précédent.
     const day1 = new Date(Date.UTC(2027, 5, 1));
     const day2 = new Date(Date.UTC(2027, 5, 2));
+    travelTo('2027-06-03T00:00:00Z');
 
     const c1 = await closeDay(h.workspace, day1);
     expect(c1.aggregate.caTotalCentimes).toBe(0);
@@ -513,6 +515,7 @@ describe('Zero-record edge cases (périodes vides)', () => {
     // AUDIT: Un mois entier sans vente doit produire une clôture mensuelle
     // valide à zéro, et la chaîne doit rester intègre.
     // 2028 is a leap year: February has 29 days.
+    travelTo('2028-03-01T00:00:00Z');
     for (let d = 1; d <= 29; d++) {
       await closeDay(h.workspace, new Date(Date.UTC(2028, 1, d)));
     }
@@ -592,6 +595,8 @@ describe('Key rotation (vérification post-rotation — conservation 10 ans)', (
       schemaVersion: closureV1.schemaVersion,
       chainHeads: closureV1.chainHeads,
       previousClosureHash: closureV1.previousClosureHash,
+      periodKey: closureV1.periodKey,
+      calendar: closureV1.calendar,
     };
     const ok = await verifySignature(
       canonicalize(skeleton),
@@ -602,6 +607,7 @@ describe('Key rotation (vérification post-rotation — conservation 10 ans)', (
 
     // Step 4: Sign a NEW closure with v2 and verify it works too.
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    travelTo(tomorrow);
     const closureV2 = await closeDay(h.workspace, tomorrow);
     expect(closureV2.signingKeyVersion).toBe('test-v2');
 
@@ -614,6 +620,8 @@ describe('Key rotation (vérification post-rotation — conservation 10 ans)', (
       schemaVersion: closureV2.schemaVersion,
       chainHeads: closureV2.chainHeads,
       previousClosureHash: closureV2.previousClosureHash,
+      periodKey: closureV2.periodKey,
+      calendar: closureV2.calendar,
     };
     const okV2 = await verifySignature(
       canonicalize(skeletonV2),

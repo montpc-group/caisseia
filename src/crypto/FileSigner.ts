@@ -1,7 +1,7 @@
 /**
  * FileSigner — Ed25519 signing using a private key on disk.
  *
- * Loads the key from NF525_SIGNING_KEY_PATH (PEM PKCS8). Refuses to load
+ * Loads the key from CAISSEIA_SIGNING_KEY_PATH (PEM PKCS8). Refuses to load
  * a key that is not chmod 600 (mode bits cannot grant access to group/other).
  *
  * Audit-friendly: never holds the raw private key bytes — uses Node's
@@ -14,6 +14,7 @@ import type { KeyObject } from 'node:crypto';
 import type { Signer, SignerKind } from './Signer.js';
 import type { SignatureEnvelope } from '../crypto.js';
 import type { PublicKeyEntry } from './keyRegistry.js';
+import { readEnv } from '../env.js';
 
 export class FileSigner implements Signer {
   readonly kind: SignerKind = 'file';
@@ -24,13 +25,13 @@ export class FileSigner implements Signer {
   ) {}
 
   static async fromEnv(): Promise<FileSigner> {
-    const keyPath = process.env['NF525_SIGNING_KEY_PATH'];
+    const keyPath = readEnv('SIGNING_KEY_PATH');
     if (!keyPath) {
       throw new Error(
-        'NF525_SIGNER=file requires NF525_SIGNING_KEY_PATH to point to an Ed25519 PEM private key',
+        'CAISSEIA_SIGNER=file requires CAISSEIA_SIGNING_KEY_PATH to point to an Ed25519 PEM private key',
       );
     }
-    const version = process.env['NF525_SIGNING_KEY_VERSION'] ?? 'v1';
+    const version = readEnv('SIGNING_KEY_VERSION') ?? 'v1';
 
     const stat = await fs.stat(keyPath);
     // POSIX mode: low 9 bits are perms. Allow only owner read/write (0600 or 0400).
@@ -39,7 +40,7 @@ export class FileSigner implements Signer {
       const mode = stat.mode & 0o777;
       if ((mode & 0o077) !== 0) {
         throw new Error(
-          `NF525_SIGNING_KEY_PATH "${keyPath}" must be chmod 600 (owner-only). Current mode: 0o${mode.toString(8)}`,
+          `CAISSEIA_SIGNING_KEY_PATH "${keyPath}" must be chmod 600 (owner-only). Current mode: 0o${mode.toString(8)}`,
         );
       }
     }
@@ -48,7 +49,7 @@ export class FileSigner implements Signer {
     const privateKey = createPrivateKey({ key: pem, format: 'pem' });
     if (privateKey.asymmetricKeyType !== 'ed25519') {
       throw new Error(
-        `NF525_SIGNING_KEY_PATH must be an Ed25519 key, got "${privateKey.asymmetricKeyType}"`,
+        `CAISSEIA_SIGNING_KEY_PATH must be an Ed25519 key, got "${privateKey.asymmetricKeyType}"`,
       );
     }
 

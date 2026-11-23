@@ -78,8 +78,8 @@ describe('NF-11 closure signs chain heads', () => {
     const c = await seed(h);
     const [rec] = await read<Record<string, unknown>>('closure-day', h.workspace);
     const p = rec!.payload as { schemaVersion: number; chainHeads: Record<string, { sequence: number; hash: string }> };
-    expect(CLOSURE_SCHEMA_VERSION).toBe(2);
-    expect(p.schemaVersion).toBe(2);
+    expect(CLOSURE_SCHEMA_VERSION).toBe(3);
+    expect(p.schemaVersion).toBe(3);
     const enc = await read('encaissement', h.workspace);
     expect(p.chainHeads['encaissement']).toEqual({ sequence: 3, hash: enc[2]!.hash });
     expect(p.chainHeads['jet']!.sequence).toBeGreaterThan(0);

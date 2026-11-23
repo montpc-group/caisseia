@@ -11,6 +11,7 @@
 
 import type { SignatureEnvelope } from '../crypto.js';
 import type { PublicKeyEntry } from './keyRegistry.js';
+import { readEnv } from '../env.js';
 
 export interface Signer {
   /** Signs a canonicalized payload, returns base64 signature + key version. */
@@ -30,11 +31,11 @@ export function setActiveSigner(signer: Signer): void {
   activeSigner = signer;
 }
 
-/** Resolve the active signer based on env (`NF525_SIGNER`) when not explicitly set. */
+/** Resolve the active signer based on env (`CAISSEIA_SIGNER`) when not explicitly set. */
 export async function getActiveSigner(): Promise<Signer> {
   if (activeSigner) return activeSigner;
 
-  const kind = (process.env['NF525_SIGNER'] ?? 'file') as SignerKind;
+  const kind = (readEnv('SIGNER') ?? 'file') as SignerKind;
   if (kind === 'file') {
     const { FileSigner } = await import('./FileSigner.js');
     activeSigner = await FileSigner.fromEnv();

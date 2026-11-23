@@ -12,9 +12,9 @@
  *  - L'event store calcule un hash propre qui inclut la signature.
  *  - Tout tampering casse la chaîne (cf. tests/inalterabilite + Postgres triggers).
  *
- * NOTE TZ : M2 utilise des bornes UTC strictes (00:00:00.000Z → 23:59:59.999Z).
- *           Une variante TZ-aware est différée à M2.5 si une app consommatrice
- *           en a besoin — l'app peut déjà passer la date "déjà bucketed".
+ * Périodes : jour ouvré LOCAL du commerce (fuseau IANA, heure de coupure),
+ * mois civil, exercice — cf. src/calendar.ts. Les bornes signées restent des
+ * instants UTC ; le libellé de la période est `periodKey` (schéma v3).
  */
 
 import { append, read, getLast, withStreamLock } from './eventStore.js';
@@ -22,12 +22,14 @@ import type { EventRecord } from './eventStore.js';
 import { canonicalize, signClosure, GENESIS_HASH } from './crypto.js';
 import { logTechnicalEvent } from './jet.js';
 import type { TxOptions } from './storage/EventStorage.js';
+import { loadTimeline, dayKey, shiftDate, type CalendarTimeline } from './calendar.js';
 import {
   ClosurePayloadSchema,
   CLOSURE_SCHEMA_VERSION,
   CHAIN_HEAD_STREAMS,
   type ChainHeads,
   type ClosurePayloadZ,
+  type BusinessCalendar,
 } from '../schemas/cloture.schema.js';
 import type { EncaissementStreamPayload } from '../schemas/encaissement.schema.js';
 
@@ -48,31 +50,52 @@ export interface CloseOptions extends TxOptions {
 
 // ─── Public API ───────────────────────────────────────────────────────
 
+/**
+ * Seals business day `date`: a 'YYYY-MM-DD' business date, or a Date = the
+ * business day containing that instant (src/calendar.ts). A day that is still
+ * running ends at the closing instant; the rest of it belongs to the next day.
+ */
 export async function closeDay(
   workspaceId: string,
-  date: Date,
+  date: Date | string,
   options: CloseOptions = {},
 ): Promise<Closure> {
-  return underClosureLock('closure-day', workspaceId, options, (tx) => closeDayLocked(workspaceId, date, options, tx));
+  return underClosureLock('closure-day', workspaceId, options, (tx) =>
+    // Lock order, the same for every writer: closure stream → encaissement → jet
+    // (a payment takes encaissement, then jet for its JET entry). closeDay takes
+    // the encaissement lock before its first JET entry and before it reads the
+    // day, so:
+    //  - a payment committed before the lock is read and counted;
+    //  - a payment still in flight holds the lock: closeDay waits for its commit;
+    //  - a payment that starts later waits for closeDay's commit and is dated
+    //    after it, while a running day ends at the closing instant (`now`):
+    //    it lands in the next period, never in a sealed one.
+    // Do not move the JET entry or the reads above this lock.
+    withStreamLock('encaissement', workspaceId, () => closeDayLocked(workspaceId, date, options, tx), tx),
+  );
 }
 
 async function closeDayLocked(
   workspaceId: string,
-  date: Date,
+  date: Date | string,
   options: CloseOptions,
   tx: TxOptions,
 ): Promise<Closure> {
-  const { startISO, endISO } = utcDayRange(date);
+  const now = Date.now();
+  const { timeline, dayClosures } = await loadTimeline(workspaceId, tx);
+  const periodKey = typeof date === 'string' ? businessDate(date) : timeline.dayOf(date.getTime());
+  const { startISO, endISO } = dayPeriod(periodKey, timeline, dayClosures, now);
 
   await logTechnicalEvent(workspaceId, 'closure_day_initiated', {
+    periodKey,
     periodStart: startISO,
     periodEnd: endISO,
   }, {}, tx);
 
-  const existing = await getCurrentDayClosure(workspaceId, date, tx);
+  const existing = dayClosures.find((r) => dayKey(r) === periodKey);
   if (existing) {
     throw new Error(
-      `NF525_CLOSURE: day ${startISO.slice(0, 10)} already closed (id=${existing._id})`,
+      `NF525_CLOSURE: day ${periodKey} already closed (id=${existing._id})`,
     );
   }
 
@@ -83,12 +106,15 @@ async function closeDayLocked(
   // wrong connection (e.g. RLS without the caller's client): never seal it.
   if (allEnc.length === 0 && (await getLast('encaissement', workspaceId, tx))) {
     throw new Error(
-      `NF525_CLOSURE: refusing to seal day ${startISO.slice(0, 10)}: the encaissement read returned 0 rows but the stream has records (pass the caller's client)`,
+      `NF525_CLOSURE: refusing to seal day ${periodKey}: the encaissement read returned 0 rows but the stream has records (pass the caller's client)`,
     );
   }
-  const inWindow = allEnc.filter(
-    (r) => r.recordedAt >= startISO && r.recordedAt <= endISO,
-  );
+  const from = Date.parse(startISO);
+  const to = Date.parse(endISO);
+  const inWindow = allEnc.filter((r) => {
+    const t = Date.parse(r.recordedAt);
+    return t >= from && t <= to;
+  });
 
   const aggregate = buildPeriodAggregate(allEnc, inWindow, options.tvaRates);
 
@@ -97,12 +123,16 @@ async function closeDayLocked(
   const previousCumul = previousDay?.payload.aggregate.cumulPerpetuel ?? 0;
   aggregate.cumulPerpetuel = previousCumul + aggregate.caTotalCentimes;
 
-  const payload = await sealAndBuildPayload(workspaceId, 'day', startISO, endISO, aggregate, tx);
+  const payload = await sealAndBuildPayload(workspaceId, 'day', startISO, endISO, aggregate, tx, {
+    periodKey,
+    calendar: timeline.at(periodKey),
+  });
   const record = await append<ClosurePayloadZ>('closure-day', workspaceId, payload, tx);
 
   await logTechnicalEvent(workspaceId, 'closure_day_completed', {
     closureId: record._id,
     sequence: record.sequence,
+    periodKey,
     periodStart: startISO,
     caTotalCentimes: aggregate.caTotalCentimes,
     cumulPerpetuel: aggregate.cumulPerpetuel,
@@ -112,6 +142,7 @@ async function closeDayLocked(
   return toClosure(record, payload);
 }
 
+/** Seals calendar month `month` (1..12) of `year`: every business day of it must be closed. */
 export async function closeMonth(
   workspaceId: string,
   year: number,
@@ -127,50 +158,51 @@ async function closeMonthLocked(
   month: number,
   tx: TxOptions,
 ): Promise<Closure> {
-  const { startISO, endISO } = utcMonthRange(year, month);
+  const periodKey = monthKeyOf(year, month);
+  const { timeline, dayClosures } = await loadTimeline(workspaceId, tx);
 
   await logTechnicalEvent(workspaceId, 'closure_month_initiated', {
     year,
     month,
-    periodStart: startISO,
-    periodEnd: endISO,
+    periodKey,
   }, {}, tx);
 
   const existing = await getMonthClosure(workspaceId, year, month, tx);
   if (existing) {
     throw new Error(
-      `NF525_CLOSURE: month ${year}-${pad2(month)} already closed (id=${existing._id})`,
+      `NF525_CLOSURE: month ${periodKey} already closed (id=${existing._id})`,
     );
   }
 
   // Verify every day of the month has a day closure.
-  const days = eachDayOfMonth(year, month);
-  const allDayClosures = await read<ClosurePayloadZ>('closure-day', workspaceId, { client: tx.client });
-  const byPeriodStart = new Map(allDayClosures.map((r) => [r.payload.periodStart, r.payload]));
-
+  const byKey = new Map(dayClosures.map((r) => [dayKey(r), r.payload]));
   const dayPayloads: ClosurePayloadZ[] = [];
   const missing: string[] = [];
-  for (const d of days) {
-    const dStart = utcDayRange(d).startISO;
-    const dc = byPeriodStart.get(dStart);
+  for (const d of daysOfMonth(year, month)) {
+    const dc = byKey.get(d);
     if (!dc) {
-      missing.push(dStart.slice(0, 10));
+      missing.push(d);
     } else {
       dayPayloads.push(dc);
     }
   }
   if (missing.length > 0) {
     throw new Error(
-      `NF525_CLOSURE: cannot close month ${year}-${pad2(month)}; missing day closures: ${missing.join(', ')}`,
+      `NF525_CLOSURE: cannot close month ${periodKey}; missing day closures: ${missing.join(', ')}`,
     );
   }
 
   const aggregate = sumAggregates(dayPayloads.map((p) => p.aggregate));
   // Period closure cumul = last day's perpetual cumul (already perpetual, do not re-sum).
-  aggregate.cumulPerpetuel =
-    dayPayloads[dayPayloads.length - 1]!.aggregate.cumulPerpetuel;
+  const lastDay = dayPayloads[dayPayloads.length - 1]!;
+  aggregate.cumulPerpetuel = lastDay.aggregate.cumulPerpetuel;
 
-  const payload = await sealAndBuildPayload(workspaceId, 'month', startISO, endISO, aggregate, tx);
+  const startISO = dayPayloads[0]!.periodStart;
+  const endISO = lastDay.periodEnd;
+  const payload = await sealAndBuildPayload(workspaceId, 'month', startISO, endISO, aggregate, tx, {
+    periodKey,
+    calendar: timeline.at(`${periodKey}-${pad2(lastDayOfMonth(year, month))}`),
+  });
   const record = await append<ClosurePayloadZ>('closure-month', workspaceId, payload, tx);
 
   await logTechnicalEvent(workspaceId, 'closure_month_completed', {
@@ -184,6 +216,13 @@ async function closeMonthLocked(
   return toClosure(record, payload);
 }
 
+/**
+ * Seals the exercice that ends in `year`: it ends with the month whose
+ * calendar names it the fiscal-year-end month (latest such month of `year`),
+ * and starts the month after the previous yearly closure, or at the first
+ * month closure for a first exercice (short or long). Every month in between
+ * must be closed.
+ */
 export async function closeYear(
   workspaceId: string,
   year: number,
@@ -193,54 +232,60 @@ export async function closeYear(
 }
 
 async function closeYearLocked(workspaceId: string, year: number, tx: TxOptions): Promise<Closure> {
-  const { startISO, endISO } = utcYearRange(year);
+  const { timeline } = await loadTimeline(workspaceId, tx);
+  const endMonth = fiscalYearEndIn(timeline, year);
+  const periodKey = monthKeyOf(year, endMonth);
 
   await logTechnicalEvent(workspaceId, 'closure_year_initiated', {
     year,
-    periodStart: startISO,
-    periodEnd: endISO,
+    periodKey,
   }, {}, tx);
 
-  const existing = await getYearClosure(workspaceId, year, tx);
+  const yearClosures = await read<ClosurePayloadZ>('closure-year', workspaceId, { client: tx.client });
+  const existing = yearClosures.find((r) => yearKey(r) === periodKey);
   if (existing) {
     throw new Error(
       `NF525_CLOSURE: year ${year} already closed (id=${existing._id})`,
     );
   }
 
-  // Verify every month of the year has a month closure.
-  const allMonthClosures = await read<ClosurePayloadZ>('closure-month', workspaceId, { client: tx.client });
-  const byPeriodStart = new Map(
-    allMonthClosures.map((r) => [r.payload.periodStart, r.payload]),
-  );
+  const monthClosures = await read<ClosurePayloadZ>('closure-month', workspaceId, { client: tx.client });
+  const byKey = new Map(monthClosures.map((r) => [monthKey(r), r.payload]));
+  const previous = yearClosures[yearClosures.length - 1];
+  const firstKey = previous
+    ? nextMonthKey(yearKey(previous))
+    : [...byKey.keys()].sort()[0] ?? periodKey;
 
   const monthPayloads: ClosurePayloadZ[] = [];
-  const missing: number[] = [];
-  for (let m = 1; m <= 12; m++) {
-    const mStart = utcMonthRange(year, m).startISO;
-    const mc = byPeriodStart.get(mStart);
+  const missing: string[] = [];
+  for (let k = firstKey; k <= periodKey; k = nextMonthKey(k)) {
+    const mc = byKey.get(k);
     if (!mc) {
-      missing.push(m);
+      missing.push(k);
     } else {
       monthPayloads.push(mc);
     }
   }
-  if (missing.length > 0) {
+  if (monthPayloads.length === 0 || missing.length > 0) {
     throw new Error(
-      `NF525_CLOSURE: cannot close year ${year}; missing month closures: ${missing.map(pad2).join(', ')}`,
+      `NF525_CLOSURE: cannot close year ${year} (exercice ${firstKey} → ${periodKey}); missing month closures: ${(missing.length ? missing : [periodKey]).join(', ')}`,
     );
   }
 
   const aggregate = sumAggregates(monthPayloads.map((p) => p.aggregate));
-  aggregate.cumulPerpetuel =
-    monthPayloads[monthPayloads.length - 1]!.aggregate.cumulPerpetuel;
+  const lastMonth = monthPayloads[monthPayloads.length - 1]!;
+  aggregate.cumulPerpetuel = lastMonth.aggregate.cumulPerpetuel;
 
-  const payload = await sealAndBuildPayload(workspaceId, 'year', startISO, endISO, aggregate, tx);
+  const payload = await sealAndBuildPayload(workspaceId, 'year', monthPayloads[0]!.periodStart, lastMonth.periodEnd, aggregate, tx, {
+    periodKey,
+    calendar: timeline.at(`${periodKey}-${pad2(lastDayOfMonth(year, endMonth))}`),
+  });
   const record = await append<ClosurePayloadZ>('closure-year', workspaceId, payload, tx);
 
   await logTechnicalEvent(workspaceId, 'closure_year_completed', {
     closureId: record._id,
     year,
+    periodKey,
     caTotalCentimes: aggregate.caTotalCentimes,
     cumulPerpetuel: aggregate.cumulPerpetuel,
   }, {}, tx);
@@ -248,14 +293,15 @@ async function closeYearLocked(workspaceId: string, year: number, tx: TxOptions)
   return toClosure(record, payload);
 }
 
+/** Closure of business day `date` ('YYYY-MM-DD', or a Date = the business day containing it). */
 export async function getCurrentDayClosure(
   workspaceId: string,
-  date: Date,
+  date: Date | string,
   opts: TxOptions = {},
 ): Promise<Closure | null> {
-  const { startISO } = utcDayRange(date);
-  const all = await read<ClosurePayloadZ>('closure-day', workspaceId, { client: opts.client });
-  const found = all.find((r) => r.payload.periodStart === startISO);
+  const { timeline, dayClosures } = await loadTimeline(workspaceId, opts);
+  const key = typeof date === 'string' ? businessDate(date) : timeline.dayOf(date.getTime());
+  const found = dayClosures.find((r) => dayKey(r) === key);
   return found ? toClosure(found, found.payload) : null;
 }
 
@@ -265,30 +311,30 @@ export async function getMonthClosure(
   month: number,
   opts: TxOptions = {},
 ): Promise<Closure | null> {
-  const { startISO } = utcMonthRange(year, month);
+  const key = monthKeyOf(year, month);
   const all = await read<ClosurePayloadZ>('closure-month', workspaceId, { client: opts.client });
-  const found = all.find((r) => r.payload.periodStart === startISO);
+  const found = all.find((r) => monthKey(r) === key);
   return found ? toClosure(found, found.payload) : null;
 }
 
+/** Closure of the exercice that ends in `year` (the latest one if two end in the same year). */
 export async function getYearClosure(
   workspaceId: string,
   year: number,
   opts: TxOptions = {},
 ): Promise<Closure | null> {
-  const { startISO } = utcYearRange(year);
   const all = await read<ClosurePayloadZ>('closure-year', workspaceId, { client: opts.client });
-  const found = all.find((r) => r.payload.periodStart === startISO);
+  const found = all.filter((r) => yearKey(r).startsWith(`${year}-`)).at(-1);
   return found ? toClosure(found, found.payload) : null;
 }
 
 // ─── Internals ────────────────────────────────────────────────────────
 
 /**
- * With a caller client: the whole closure runs under the closure stream's
- * lock, inside the caller's transaction (two closures of the same stream
- * cannot both pass the « already closed » check). Without one, unchanged: no
- * SDK transaction, so a refused closure keeps its « initiated » JET entry.
+ * The whole closure runs under the closure stream's lock, in one transaction:
+ * the caller's (with a client) or the SDK's own. Two closures of the same
+ * stream cannot both pass the « already closed » check, and a refused
+ * closure leaves nothing behind (its « initiated » JET entry rolls back too).
  */
 function underClosureLock(
   stream: 'closure-day' | 'closure-month' | 'closure-year',
@@ -296,8 +342,44 @@ function underClosureLock(
   opts: TxOptions,
   fn: (tx: TxOptions) => Promise<Closure>,
 ): Promise<Closure> {
-  const tx: TxOptions = opts.client ? { client: opts.client } : {};
-  return tx.client ? withStreamLock(stream, workspaceId, fn, tx) : fn(tx);
+  return withStreamLock(stream, workspaceId, fn, opts.client ? { client: opts.client } : {});
+}
+
+/**
+ * Bounds of business day `date`: it starts right after the previous day's
+ * closure if there is one (a day closed early hands the rest of its calendar
+ * day to the next one), else at its calendar start; it ends right before the
+ * next day's closure if there is one, else at its calendar end, or at `now`
+ * while it is still running. Every instant thus sits in exactly one day. A
+ * day whose calendar start is still to come cannot be closed.
+ */
+function dayPeriod(
+  date: string,
+  timeline: CalendarTimeline,
+  dayClosures: EventRecord<ClosurePayloadZ>[],
+  now: number,
+): { startISO: string; endISO: string } {
+  const calStart = timeline.start(date);
+  if (calStart > now) {
+    throw new Error(`NF525_CLOSURE: day ${date} has not started (starts ${new Date(calStart).toISOString()})`);
+  }
+  const byKey = new Map(dayClosures.map((r) => [dayKey(r), r.payload]));
+  const prev = byKey.get(shiftDate(date, -1));
+  const next = byKey.get(shiftDate(date, 1));
+  const start = prev ? Date.parse(prev.periodEnd) + 1 : calStart;
+  const end = next ? Date.parse(next.periodStart) - 1 : Math.min(timeline.end(date), now);
+  if (end < start) {
+    throw new Error(`NF525_CLOSURE: day ${date} has no time left to close (previous day closed until ${prev?.periodEnd})`);
+  }
+  return { startISO: new Date(start).toISOString(), endISO: new Date(end).toISOString() };
+}
+
+/** Latest month of `year` whose calendar names it the fiscal-year-end month. */
+function fiscalYearEndIn(timeline: CalendarTimeline, year: number): number {
+  for (let m = 12; m >= 1; m--) {
+    if (timeline.at(`${monthKeyOf(year, m)}-${pad2(lastDayOfMonth(year, m))}`).fiscalYearEndMonth === m) return m;
+  }
+  throw new Error(`NF525_CLOSURE: no exercice ends in ${year} (fiscal-year-end month changed during the year)`);
 }
 
 /**
@@ -315,18 +397,20 @@ async function sealAndBuildPayload(
   periodEnd: string,
   aggregate: ClosureAggregate,
   tx: TxOptions,
+  period: { periodKey: string; calendar: BusinessCalendar },
 ): Promise<ClosurePayloadZ> {
   const closedAt = new Date().toISOString();
   const chainHeads = await chainHeadsAt(workspaceId, periodEnd, tx);
   // NF-11 closure chain: sign the hash of the previous closure of this stream,
   // so deleting/renumbering a closure breaks the next one's signed link.
-  // Serialized against a concurrent closure of the same stream only with a caller client (underClosureLock);
-  // without one, a race fails verification loudly.
+  // Serialized against a concurrent closure of the same stream by underClosureLock.
   const previous = await getLast(`closure-${type}`, workspaceId, tx);
   const skeletonForSig = {
     type, periodStart, periodEnd, closedAt, aggregate,
     schemaVersion: CLOSURE_SCHEMA_VERSION, chainHeads,
     previousClosureHash: previous?.hash ?? GENESIS_HASH,
+    periodKey: period.periodKey,
+    calendar: { ...period.calendar },
   };
   const envelope = await signClosure(canonicalize(skeletonForSig));
   return ClosurePayloadSchema.parse({
@@ -493,45 +577,50 @@ function toClosure(
     ...(payload.chainHeads
       ? { schemaVersion: payload.schemaVersion, chainHeads: payload.chainHeads, previousClosureHash: payload.previousClosureHash }
       : {}),
+    ...(payload.periodKey ? { periodKey: payload.periodKey, calendar: payload.calendar } : {}),
     signature: payload.signature,
     signingKeyVersion: payload.signingKeyVersion,
   };
 }
 
-// ─── Date helpers (UTC) ───────────────────────────────────────────────
+// ─── Period keys ──────────────────────────────────────────────────────
 
-function utcDayRange(date: Date): { startISO: string; endISO: string } {
-  const y = date.getUTCFullYear();
-  const m = date.getUTCMonth();
-  const d = date.getUTCDate();
-  return {
-    startISO: new Date(Date.UTC(y, m, d, 0, 0, 0, 0)).toISOString(),
-    endISO: new Date(Date.UTC(y, m, d, 23, 59, 59, 999)).toISOString(),
-  };
+/** Month of a month closure: signed periodKey (v3), else its UTC start month (v1/v2). */
+function monthKey(r: EventRecord<ClosurePayloadZ>): string {
+  return r.payload.periodKey ?? r.payload.periodStart.slice(0, 7);
 }
 
-function utcMonthRange(year: number, month: number): { startISO: string; endISO: string } {
+/** Last month of a yearly closure's exercice: signed periodKey (v3), else December of its UTC start year (v1/v2). */
+function yearKey(r: EventRecord<ClosurePayloadZ>): string {
+  return r.payload.periodKey ?? `${r.payload.periodStart.slice(0, 4)}-12`;
+}
+
+function businessDate(date: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || shiftDate(date, 0) !== date) {
+    throw new Error(`NF525_CLOSURE: business date must be YYYY-MM-DD (got ${date})`);
+  }
+  return date;
+}
+
+function monthKeyOf(year: number, month: number): string {
   if (month < 1 || month > 12) {
     throw new Error(`NF525_CLOSURE: month must be 1..12 (got ${month})`);
   }
-  const startISO = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0)).toISOString();
-  const endISO = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999)).toISOString();
-  return { startISO, endISO };
+  return `${year}-${pad2(month)}`;
 }
 
-function utcYearRange(year: number): { startISO: string; endISO: string } {
-  return {
-    startISO: new Date(Date.UTC(year, 0, 1, 0, 0, 0, 0)).toISOString(),
-    endISO: new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999)).toISOString(),
-  };
+function nextMonthKey(key: string): string {
+  const [y, m] = key.split('-').map(Number) as [number, number];
+  return m === 12 ? monthKeyOf(y + 1, 1) : monthKeyOf(y, m + 1);
 }
 
-function eachDayOfMonth(year: number, month: number): Date[] {
-  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  const days: Date[] = [];
-  for (let d = 1; d <= lastDay; d++) {
-    days.push(new Date(Date.UTC(year, month - 1, d)));
-  }
+function lastDayOfMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function daysOfMonth(year: number, month: number): string[] {
+  const days: string[] = [];
+  for (let d = 1; d <= lastDayOfMonth(year, month); d++) days.push(`${monthKeyOf(year, month)}-${pad2(d)}`);
   return days;
 }
 
@@ -583,6 +672,10 @@ export interface Closure {
   chainHeads?: ChainHeads;
   /** NF-11 (v2) : hash signé de la clôture précédente du même flux (GENESIS_HASH pour la première) */
   previousClosureHash?: string;
+  /** v3 : jour ouvré (YYYY-MM-DD), mois (YYYY-MM) ou dernier mois de l'exercice (YYYY-MM) ; absent avant v3 */
+  periodKey?: string;
+  /** v3 : calendrier (fuseau, coupure, fin d'exercice) utilisé, signé avec la clôture */
+  calendar?: BusinessCalendar;
   /** Signature Ed25519 du payload (skeleton sans signature) */
   signature: string;
   /** Version de la clé éditeur ayant signé */

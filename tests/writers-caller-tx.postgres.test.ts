@@ -5,7 +5,7 @@
  * released by the SDK. Parallel caller transactions serialize per stream:
  * no fork, no duplicate sequence.
  *
- * A container that fails to start FAILS this file (set NF525_SKIP_POSTGRES=1
+ * A container that fails to start FAILS this file (set CAISSEIA_SKIP_POSTGRES=1
  * to skip it explicitly).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -19,8 +19,9 @@ import { recordCorrection } from '../src/corrections.js';
 import { logTechnicalEvent } from '../src/jet.js';
 import { read } from '../src/eventStore.js';
 import { verifyChain } from '../src/crypto.js';
+import { readEnv } from '../src/env.js';
 
-const d = process.env['NF525_SKIP_POSTGRES'] === '1' ? describe.skip : describe;
+const d = readEnv('SKIP_POSTGRES') === '1' ? describe.skip : describe;
 
 const enc = (montantCentimes: number) => ({
   montantCentimes,

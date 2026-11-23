@@ -60,6 +60,13 @@ export {
 } from '../closures.js';
 
 export {
+  setBusinessCalendar,
+  getBusinessCalendar,
+  DEFAULT_CALENDAR,
+  type BusinessCalendar,
+} from '../calendar.js';
+
+export {
   exportPeriod,
   verifyExportIntegrity,
   generateManifest,
@@ -105,6 +112,7 @@ export {
   ClosureAggregateSchema,
   ClosureTypeSchema,
   CLOSURE_SCHEMA_VERSION,
+  BusinessCalendarSchema,
   type ClosurePayloadZ,
 } from '../../schemas/cloture.schema.js';
 

@@ -50,6 +50,7 @@ export const JetEventTypeSchema = z.enum([
   'manual_entry_injected',
 
   // Configuration
+  'business_calendar_set',
   'payment_method_config_changed',
   'operator_config_changed',
 

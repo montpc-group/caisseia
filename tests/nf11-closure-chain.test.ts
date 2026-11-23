@@ -5,9 +5,11 @@
  *     record of the same stream, GENESIS_HASH for the first): deleting a
  *     closure and renumbering + rechaining its stream breaks the next
  *     closure's signed link.
- * (b) the verifiers raise an ERROR for any elapsed UTC day (strictly before
- *     the verification date) that has encaissement/JET records but no day
- *     closure: deleting the newest day closure is detected once its day elapsed.
+ * (b) the verifiers raise an ERROR for any elapsed business day (ended before
+ *     the verification date; default calendar Europe/Paris, so 1 March 2027
+ *     runs 28/02 23:00Z → 01/03 22:59:59.999Z) that has encaissement/JET
+ *     records no day closure covers: deleting the newest day closure is
+ *     detected once its day elapsed.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -75,7 +77,7 @@ describe('NF-11 closure chain + elapsed days', () => {
   it('control: untouched store -> valid + fullyVerified (chain and export)', async () => {
     await seedDays(h);
     const report = await verifyChainIntegrity(h.workspace, { now: AFTER });
-    expect(report.error).toBeUndefined();
+    expect(report.error, report.error).toBeUndefined();
     expect(report.valid).toBe(true);
     expect(report.fullyVerified).toBe(true);
     const check = await verifyExportIntegrity(await exportMarch(h), { now: AFTER });
@@ -110,6 +112,7 @@ describe('NF-11 closure chain + elapsed days', () => {
   });
 
   it('deleting a month closure + rechain -> closure chain broken', async () => {
+    vi.setSystemTime(new Date('2027-04-01T12:00:00Z'));
     for (let m = 1; m <= 3; m++) {
       const last = new Date(Date.UTC(2027, m, 0)).getUTCDate();
       for (let d = 1; d <= last; d++) await closeDay(h.workspace, new Date(Date.UTC(2027, m - 1, d)));
@@ -131,7 +134,8 @@ describe('NF-11 closure chain + elapsed days', () => {
     expect(report.fullyVerified).toBe(false);
     expect(report.error).toMatch(/elapsed day.*2027-03-01/);
     expect(report.warnings).toBeUndefined();
-    const exp = await exportPeriod(h.workspace, new Date(Date.UTC(2027, 2, 1)), new Date(Date.UTC(2027, 2, 1, 23, 59, 59, 999)), 'json');
+    // The export window covers the whole business day 1 March (Paris).
+    const exp = await exportPeriod(h.workspace, new Date('2027-02-28T23:00:00.000Z'), new Date('2027-03-01T22:59:59.999Z'), 'json');
     const check = await verifyExportIntegrity(exp, { now: day(2) });
     expect(check.valid).toBe(false);
     expect(check.errors?.join('\n')).toMatch(/2027-03-01/);
@@ -140,7 +144,8 @@ describe('NF-11 closure chain + elapsed days', () => {
   it('today (not elapsed) without closure is not an error', async () => {
     vi.setSystemTime(day(1));
     await recordEncaissement(h.workspace, { montantCentimes: 500, devise: 'EUR', mode: 'cb', tvaCode: 'TVA20' });
-    const report = await verifyChainIntegrity(h.workspace, { now: day(1, 23) });
+    // 22:00Z = 23:00 Paris: business day 1 March still running.
+    const report = await verifyChainIntegrity(h.workspace, { now: day(1, 22) });
     expect(report.valid).toBe(true);
     expect(report.fullyVerified).toBe(true);
   });

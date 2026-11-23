@@ -4,16 +4,17 @@
  * src/storage/migrations/ in lexical order. Safe to re-run.
  *
  * CLI usage:  caisseia-migrate, or pnpm migrate after pnpm build
- *             (plain node on dist; reads NF525_DATABASE_URL)
+ *             (plain node on dist; reads CAISSEIA_DATABASE_URL)
  */
 
 import { promises as fs, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve as resolvePath } from 'node:path';
 import pg from 'pg';
+import { readEnv } from '../env.js';
 
 export interface MigrateOptions {
-  /** Postgres connection string. Falls back to NF525_DATABASE_URL. */
+  /** Postgres connection string. Falls back to CAISSEIA_DATABASE_URL. */
   connectionString?: string;
   /** Migrations directory. Defaults to ./migrations next to this file. */
   migrationsDir?: string;
@@ -22,9 +23,9 @@ export interface MigrateOptions {
 }
 
 export async function migrate(opts: MigrateOptions = {}): Promise<{ applied: string[] }> {
-  const url = opts.connectionString ?? process.env['NF525_DATABASE_URL'];
+  const url = opts.connectionString ?? readEnv('DATABASE_URL');
   if (!url) {
-    throw new Error('migrate: NF525_DATABASE_URL or opts.connectionString is required');
+    throw new Error('migrate: CAISSEIA_DATABASE_URL or opts.connectionString is required');
   }
   const log = opts.log ?? ((m) => console.warn(`[nf525:migrate] ${m}`));
   const here = dirname(fileURLToPath(import.meta.url));

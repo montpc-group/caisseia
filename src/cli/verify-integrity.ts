@@ -11,13 +11,14 @@
  *   node dist/src/cli/verify-integrity.js <workspaceId>
  *
  * Environment:
- *   NF525_DATABASE_URL — Postgres connection string
- *   NF525_STORAGE — 'postgres' (default) or 'memory'
- *   NF525_KEY_REGISTRY_PATH — public-key registry (default: bundled keys/public-keys.json).
+ *   CAISSEIA_DATABASE_URL — Postgres connection string
+ *   CAISSEIA_STORAGE — 'postgres' (default) or 'memory'
+ *   CAISSEIA_KEY_REGISTRY_PATH — public-key registry (default: bundled keys/public-keys.json).
  *     Must list every signing key version used; empty → FAIL.
  */
 
 import { verifyChainIntegrity } from '../integrity.js';
+import { defaultEnv } from '../env.js';
 
 const workspaceId = process.argv[2];
 
@@ -25,11 +26,14 @@ if (!workspaceId) {
   console.error('Usage: verify-integrity <workspaceId>');
   console.error('');
   console.error('Environment:');
-  console.error('  NF525_DATABASE_URL  Postgres connection string');
-  console.error('  NF525_STORAGE       postgres (default) | memory');
-  console.error('  NF525_KEY_REGISTRY_PATH  public-key registry JSON (required non-empty)');
+  console.error('  CAISSEIA_DATABASE_URL  Postgres connection string');
+  console.error('  CAISSEIA_STORAGE       postgres (default) | memory');
+  console.error('  CAISSEIA_KEY_REGISTRY_PATH  public-key registry JSON (required non-empty)');
   process.exit(2);
 }
+
+// A production check: Postgres unless the caller chose otherwise (documented default above).
+defaultEnv('STORAGE', 'postgres');
 
 try {
   const report = await verifyChainIntegrity(workspaceId);

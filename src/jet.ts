@@ -84,6 +84,7 @@ export type JetEventType =
   | 'manual_entry_injected'
 
   // Configuration
+  | 'business_calendar_set'        // Fuseau, heure de coupure, fin d'exercice (non rétroactif)
   | 'payment_method_config_changed'
   | 'operator_config_changed'
 

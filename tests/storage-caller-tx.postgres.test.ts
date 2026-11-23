@@ -4,14 +4,15 @@
  * application can seal an invoice in the same transaction as its own rows.
  *
  * Unlike the other Postgres suites, a container that fails to start FAILS
- * this file (set NF525_SKIP_POSTGRES=1 to skip it explicitly).
+ * this file (set CAISSEIA_SKIP_POSTGRES=1 to skip it explicitly).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { migrate } from '../src/storage/migrate.js';
 import { PostgresStorage } from '../src/storage/PostgresStorage.js';
+import { readEnv } from '../src/env.js';
 
-const d = process.env['NF525_SKIP_POSTGRES'] === '1' ? describe.skip : describe;
+const d = readEnv('SKIP_POSTGRES') === '1' ? describe.skip : describe;
 const H = (c: string) => c.repeat(64);
 
 d('PostgresStorage.append inside a caller transaction', () => {

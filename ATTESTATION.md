@@ -1,4 +1,9 @@
-# Attestation individuelle — Modèle BOFIP
+# MODÈLE — Attestation individuelle (non signée)
+
+> **Ceci est un modèle de travail, pas une attestation.** Aucune attestation
+> éditeur n'est signée à ce jour pour CAISSEIA. Le jour de la signature, la
+> version attestée et son empreinte seront publiées dans le CHANGELOG.
+
 
 > Modèle conforme à BOI-LETTRE-000242 (mise à jour 25/03/2026).
 > Source : https://bofip.impots.gouv.fr/bofip/10692-PGP.html
@@ -14,7 +19,7 @@
 
 ---
 
-## VOLET 1 — À remplir et signer par l'éditeur
+## VOLET 1 — Partie éditeur (modèle)
 
 ### Attestation individuelle relative à l'utilisation d'un logiciel ou d'un système de caisse sécurisé
 
@@ -58,19 +63,12 @@ Les fonctionnalités suivantes ne sont **pas** couvertes par cette attestation :
 
 ---
 
-**Fait à** : [VILLE]
-**Le** : [DATE_SIGNATURE]
-
-**Signature et tampon de la société éditrice :**
-
-> [NOM Prénom du dirigeant]
-> [QUALITÉ — Président de SAS / SASU, Gérant, etc.]
-> MONTPC
+*À compléter uniquement lors de la signature : lieu, date, nom, qualité et signature du représentant légal de l'éditeur.*
 
 ---
 ---
 
-## VOLET 2 — À compléter par l'entreprise utilisatrice
+## VOLET 2 — Partie entreprise utilisatrice (modèle)
 
 > Cette attestation n'a de valeur que si son volet 2 est dûment complété
 > et signé par l'entreprise utilisatrice du logiciel.
@@ -87,13 +85,7 @@ Le logiciel est utilisé via l'application : **[NOM_APP_CONSOMMATRICE]**, versio
 
 ---
 
-**Fait à** : [VILLE_UTILISATEUR]
-**Le** : [DATE_SIGNATURE_UTILISATEUR]
-
-**Signature de l'utilisateur :**
-
-> [NOM Prénom]
-> [QUALITÉ — Président, Gérant, Auto-entrepreneur, etc.]
+*À compléter par l'entreprise utilisatrice : lieu, date, nom, qualité et signature.*
 
 ---
 

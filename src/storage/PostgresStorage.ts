@@ -16,6 +16,7 @@ import type { Pool, PoolClient } from 'pg';
 import type { EventStorage, AppendInput, ReadFilter, TxOptions } from './EventStorage.js';
 import { AppendConflictError } from './EventStorage.js';
 import type { StreamName, EventRecord } from '../eventStore.js';
+import { readEnv } from '../env.js';
 
 export class PostgresStorage implements EventStorage {
   constructor(private readonly pool: Pool) {}
@@ -26,9 +27,9 @@ export class PostgresStorage implements EventStorage {
   }
 
   static fromEnv(): PostgresStorage {
-    const url = process.env['NF525_DATABASE_URL'];
+    const url = readEnv('DATABASE_URL');
     if (!url) {
-      throw new Error('PostgresStorage.fromEnv: NF525_DATABASE_URL is required');
+      throw new Error('PostgresStorage.fromEnv: CAISSEIA_DATABASE_URL is required');
     }
     return PostgresStorage.fromConnectionString(url);
   }

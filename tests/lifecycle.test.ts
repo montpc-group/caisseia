@@ -16,7 +16,7 @@ import { closeDay, closeMonth } from '../src/closures.js';
 import { verifyChainIntegrity } from '../src/integrity.js';
 import { exportPeriod, verifyExportIntegrity } from '../src/restitution.js';
 import { read } from '../src/eventStore.js';
-import { freshHarness, type Harness } from './_helpers.js';
+import { freshHarness, travelTo, type Harness } from './_helpers.js';
 import type { Encaissement } from '../src/encaissement.js';
 import type { JetPayloadZ } from '../schemas/jet.schema.js';
 
@@ -132,7 +132,10 @@ describe('Lifecycle end-to-end (scénario contrôle DGFIP — art. 286 I 3°bis 
     // ================================================================
     // "Today" captures all 10 encaissements + 2 corrections (all recorded now).
     // Days 2 and 3 are future UTC days — they'll be empty closures.
+    // Travel past March 2027 first: today's day is then over and sealed whole,
+    // and every closure's own JET entries are dated 2027-04-01 (still running).
     const today = new Date();
+    travelTo('2027-04-01T00:00:00Z');
     const closureDay1 = await closeDay(h.workspace, today);
     const closureDay2 = await closeDay(h.workspace, DAY2);
     const closureDay3 = await closeDay(h.workspace, DAY3);
@@ -166,8 +169,10 @@ describe('Lifecycle end-to-end (scénario contrôle DGFIP — art. 286 I 3°bis 
 
     const monthClosure = await closeMonth(h.workspace, 2027, 3);
     expect(monthClosure.type).toBe('month');
-    expect(monthClosure.periodStart.startsWith('2027-03-01')).toBe(true);
-    expect(monthClosure.periodEnd.startsWith('2027-03-31')).toBe(true);
+    expect(monthClosure.periodKey).toBe('2027-03');
+    // Paris: UTC+1 on 1 March, UTC+2 after the DST change of 28 March.
+    expect(monthClosure.periodStart).toBe('2027-02-28T23:00:00.000Z');
+    expect(monthClosure.periodEnd).toBe('2027-03-31T21:59:59.999Z');
 
     // ================================================================
     // STEP 5 — Verify chain integrity

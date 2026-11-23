@@ -20,14 +20,14 @@ export class KmsSigner implements Signer {
   async sign(_payload: string): Promise<SignatureEnvelope> {
     throw new Error(
       'NOT_IMPLEMENTED: KmsSigner is deferred to Milestone 3. ' +
-        'For local development set NF525_SIGNER=file (with NF525_SIGNING_KEY_PATH).',
+        'For local development set CAISSEIA_SIGNER=file (with CAISSEIA_SIGNING_KEY_PATH).',
     );
   }
 
   async verify(_payload: string, _signature: string, _key: PublicKeyEntry): Promise<boolean> {
     throw new Error(
       'NOT_IMPLEMENTED: KmsSigner.verify is deferred to Milestone 3. ' +
-        'For local development set NF525_SIGNER=file.',
+        'For local development set CAISSEIA_SIGNER=file.',
     );
   }
 }

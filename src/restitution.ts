@@ -15,7 +15,7 @@ import { hash, canonicalize, GENESIS_HASH, verifyClosureSignature } from './cryp
 import { logTechnicalEvent } from './jet.js';
 import type { TxOptions } from './storage/EventStorage.js';
 import { loadRegistry, type KeyRegistry } from './crypto/keyRegistry.js';
-import { chainHeadFailures, closureLinkBroken, elapsedDaysWithoutClosure, legacyClosureWarnings } from './integrity.js';
+import { chainHeadFailures, closureLinkBroken, elapsedDaysWithoutClosure, legacyClosureWarnings, overlappingDayClosures } from './integrity.js';
 import { renderSummaryReportPdf, type SummaryReportData } from './attestation.js';
 import type { EncaissementStreamPayload } from '../schemas/encaissement.schema.js';
 import type { ClosurePayloadZ } from '../schemas/cloture.schema.js';
@@ -312,14 +312,20 @@ export async function verifyExportIntegrity(
     }
     // 6. NF-11: every elapsed day fully inside the export window that has
     //    records must have its day closure in the export.
+    const dayClosures = data.closures.filter((c) => c.stream === 'closure-day');
     const unclosed = elapsedDaysWithoutClosure(
       [...allEnc, ...data.jet],
-      data.closures.filter((c) => c.stream === 'closure-day'),
+      dayClosures,
+      data.jet,
       options.now ?? new Date(),
       { from: manifest.periodFrom, to: manifest.periodTo },
     );
     if (unclosed.length) {
       errors.push(`Jour(s) écoulé(s) avec enregistrements sans clôture journalière : ${unclosed.join(', ')}`);
+    }
+    const overlaps = overlappingDayClosures(dayClosures);
+    if (overlaps.length) {
+      errors.push(`Clôtures journalières qui se chevauchent : ${overlaps.join(', ')}`);
     }
     warnings.push(...legacyClosureWarnings(data.closures));
   } else {

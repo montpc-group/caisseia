@@ -5,7 +5,7 @@
  * where the REVOKE grants and the BEFORE-trigger can be exercised. This is
  * the test we re-run in front of a DGFIP inspector if asked.
  *
- * Skipped when Docker is unavailable (set NF525_SKIP_POSTGRES=1
+ * Skipped when Docker is unavailable (set CAISSEIA_SKIP_POSTGRES=1
  * to skip in any environment, or rely on the runtime fallback if testcontainers
  * fails to start).
  */
@@ -20,8 +20,9 @@ import { _setRegistryForTests } from '../src/crypto/keyRegistry.js';
 import { MemorySigner } from '../src/crypto/MemorySigner.js';
 import { recordEncaissement } from '../src/encaissement.js';
 import { verifyChainIntegrity } from '../src/integrity.js';
+import { readEnv } from '../src/env.js';
 
-const SKIP = process.env['NF525_SKIP_POSTGRES'] === '1';
+const SKIP = readEnv('SKIP_POSTGRES') === '1';
 
 interface Ctx {
   superuserUrl: string;
@@ -90,7 +91,7 @@ afterAll(async () => {
   _resetActiveStorage();
   _resetActiveSigner();
   _setRegistryForTests(null);
-});
+}, 60_000); // container stop takes > 10 s on a loaded host
 
 describe('Postgres — structural inalterability proof', () => {
   it('migrations idempotently install table + triggers + role', async () => {

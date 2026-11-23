@@ -5,10 +5,14 @@
  *  - unique (workspaceId, stream, sequence) — duplicate append throws AppendConflictError
  *  - frozen records — once appended, mutation attempts throw InalterableViolationError
  *
+ * No transactions: a caller client ({ client }) is refused, never ignored —
+ * the caller would believe its writes joined its transaction.
+ *
  * Records are returned as deep clones to prevent test code from mutating
  * internal state and accidentally "passing" because of shared references.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { EventStorage, AppendInput, ReadFilter, TxOptions } from './EventStorage.js';
 import { AppendConflictError, InalterableViolationError } from './EventStorage.js';
 import type { StreamName, EventRecord } from '../eventStore.js';
@@ -28,8 +32,11 @@ export class InMemoryStorage implements EventStorage {
   private rows: StoredRow[] = [];
   /** Tail of the withStreamLock queue per `workspaceId:stream`. */
   private locks = new Map<string, Promise<unknown>>();
+  /** Locks held by the current async call chain (re-entrant, like a Postgres session's advisory locks). */
+  private held = new AsyncLocalStorage<ReadonlySet<string>>();
 
-  async append<T>(input: AppendInput<T>): Promise<EventRecord<T>> {
+  async append<T>(input: AppendInput<T>, opts?: TxOptions): Promise<EventRecord<T>> {
+    refuseClient(opts);
     const conflict = this.rows.find(
       (r) =>
         r.workspaceId === input.workspaceId &&
@@ -55,7 +62,8 @@ export class InMemoryStorage implements EventStorage {
     return rowToRecord<T>(row);
   }
 
-  async read<T>(filter: ReadFilter): Promise<EventRecord<T>[]> {
+  async read<T>(filter: ReadFilter, opts?: TxOptions): Promise<EventRecord<T>[]> {
+    refuseClient(opts);
     let out = this.rows.filter(
       (r) => r.workspaceId === filter.workspaceId && r.stream === filter.stream,
     );
@@ -68,7 +76,8 @@ export class InMemoryStorage implements EventStorage {
     return out.map((r) => rowToRecord<T>(r));
   }
 
-  async getLast<T>(workspaceId: string, stream: StreamName): Promise<EventRecord<T> | null> {
+  async getLast<T>(workspaceId: string, stream: StreamName, opts?: TxOptions): Promise<EventRecord<T> | null> {
+    refuseClient(opts);
     let last: StoredRow | null = null;
     for (const r of this.rows) {
       if (r.workspaceId !== workspaceId || r.stream !== stream) continue;
@@ -83,9 +92,12 @@ export class InMemoryStorage implements EventStorage {
     fn: (opts: TxOptions) => Promise<R>,
     opts: TxOptions = {},
   ): Promise<R> {
+    refuseClient(opts);
     const key = `${workspaceId}:${stream}`;
+    const held = this.held.getStore() ?? new Set<string>();
+    if (held.has(key)) return fn(opts);
     const prev = this.locks.get(key) ?? Promise.resolve();
-    const run = prev.then(() => fn(opts));
+    const run = prev.then(() => this.held.run(new Set([...held, key]), () => fn(opts)));
     const tail = run.catch(() => undefined);
     this.locks.set(key, tail);
     try {
@@ -146,6 +158,14 @@ export class InMemoryStorage implements EventStorage {
    */
   _rejectMutation(): never {
     throw new InalterableViolationError('row in nf525_event cannot be modified');
+  }
+}
+
+function refuseClient(opts?: TxOptions): void {
+  if (opts?.client) {
+    throw new Error(
+      'NF525_STORAGE: { client } given but the active storage is in-memory (no transactions); use PostgresStorage',
+    );
   }
 }
 

@@ -5,10 +5,10 @@
  * read along these paths must run on the caller's client, where the GUC is
  * set — otherwise a closure seals an EMPTY day.
  *
- * A container that fails to start FAILS this file (set NF525_SKIP_POSTGRES=1
+ * A container that fails to start FAILS this file (set CAISSEIA_SKIP_POSTGRES=1
  * to skip it explicitly).
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import pg from 'pg';
 import type { PoolClient } from 'pg';
 import { migrate } from '../src/storage/migrate.js';
@@ -21,8 +21,9 @@ import { recordEncaissement } from '../src/encaissement.js';
 import { closeDay, closeMonth, getCurrentDayClosure } from '../src/closures.js';
 import { verifyChainIntegrity } from '../src/integrity.js';
 import { exportPeriod } from '../src/restitution.js';
+import { readEnv } from '../src/env.js';
 
-const d = process.env['NF525_SKIP_POSTGRES'] === '1' ? describe.skip : describe;
+const d = readEnv('SKIP_POSTGRES') === '1' ? describe.skip : describe;
 
 const WS = 'ws-rls';
 
@@ -98,26 +99,32 @@ d('closures / integrity / export on the caller client under FORCE RLS', () => {
   });
 
   it('closeDay, closeMonth, verifyChainIntegrity and exportPeriod see and seal the real rows', async () => {
-    const now = new Date();
-    const year = now.getUTCFullYear();
-    const month = now.getUTCMonth() + 1;
-    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    // February 2027 (Europe/Paris, UTC+1), sealed on 1 March: a day can be
+    // closed only once it has started, so the clock (Date only) moves.
+    const year = 2027;
+    const month = 2;
+    const lastDay = 28;
+    const saleAt = new Date('2027-02-10T10:00:00.000Z');
+    const now = new Date('2027-03-01T12:00:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(saleAt);
 
     const t = await spaceClient();
     try {
       await recordEncaissement(WS, { montantCentimes: 1200, devise: 'EUR', mode: 'cb', tvaCode: 'TVA20' }, { client: t.c });
       await recordEncaissement(WS, { montantCentimes: 800, devise: 'EUR', mode: 'especes', tvaCode: 'TVA20' }, { client: t.c });
 
-      const day = await closeDay(WS, now, { client: t.c });
+      vi.setSystemTime(now);
+      const day = await closeDay(WS, saleAt, { client: t.c });
       expect(day.aggregate.nbTransactions).toBe(2);
       expect(day.aggregate.caTotalCentimes).toBe(2000);
       expect(day.aggregate.cumulPerpetuel).toBe(2000);
       expect(day.chainHeads?.encaissement.sequence).toBe(2);
-      expect((await getCurrentDayClosure(WS, now, { client: t.c }))?._id).toBe(day._id);
+      expect((await getCurrentDayClosure(WS, '2027-02-10', { client: t.c }))?._id).toBe(day._id);
 
       for (let dd = 1; dd <= lastDay; dd++) {
-        if (dd === now.getUTCDate()) continue;
-        await closeDay(WS, new Date(Date.UTC(year, month - 1, dd)), { client: t.c });
+        if (dd === 10) continue;
+        await closeDay(WS, `2027-02-${String(dd).padStart(2, '0')}`, { client: t.c });
       }
       const m = await closeMonth(WS, year, month, { client: t.c });
       expect(m.aggregate.nbTransactions).toBe(2);
@@ -131,8 +138,8 @@ d('closures / integrity / export on the caller client under FORCE RLS', () => {
 
       const exp = await exportPeriod(
         WS,
-        new Date(Date.UTC(year, month - 1, 1)),
-        new Date(Date.UTC(year, month, 0, 23, 59, 59, 999)),
+        new Date('2027-01-31T23:00:00.000Z'),
+        new Date('2027-02-28T22:59:59.999Z'),
         'json',
         { client: t.c },
       );
@@ -142,6 +149,7 @@ d('closures / integrity / export on the caller client under FORCE RLS', () => {
       await t.c.query('COMMIT');
       expect(t.released()).toBe(0);
     } finally {
+      vi.useRealTimers();
       t.done();
     }
   });
