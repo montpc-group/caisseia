@@ -1,0 +1,108 @@
+{
+  "name": "caisseia",
+  "version": "1.0.0-rc.5",
+  "description": "CAISSEIA — Caisse · Inaltérabilité · Archivage. Registre inaltérable pour la loi anti-fraude TVA (art. 286 I 3° bis CGI) : inaltérabilité, sécurisation, conservation, archivage des encaissements. Journal append-only chaîné, clôtures signées Ed25519, exports pour l’administration fiscale, modèle d’attestation éditeur.",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./core": {
+      "types": "./dist/src/core/index.d.ts",
+      "import": "./dist/src/core/index.js"
+    },
+    "./fr": {
+      "types": "./dist/src/fr/index.d.ts",
+      "import": "./dist/src/fr/index.js"
+    },
+    "./package.json": "./package.json",
+    "./dist/*": "./dist/*"
+  },
+  "license": "AGPL-3.0-only",
+  "homepage": "https://caisseia.fr",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/montpc-group/caisseia.git"
+  },
+  "bugs": {
+    "url": "https://github.com/montpc-group/caisseia/issues"
+  },
+  "author": {
+    "name": "MONTPC SASU",
+    "email": "contact@montpc.com"
+  },
+  "bin": {
+    "caisseia-verify-integrity": "dist/src/cli/verify-integrity.js",
+    "caisseia-generate-attestation": "dist/src/cli/generate-attestation.js",
+    "caisseia-migrate": "dist/src/storage/migrate.js"
+  },
+  "scripts": {
+    "build": "tsc && node -e \"require('node:fs').cpSync('src/storage/migrations', 'dist/src/storage/migrations', { recursive: true })\"",
+    "dev": "tsc --watch",
+    "test": "vitest run --exclude tests/**/*.postgres.test.ts",
+    "test:watch": "vitest",
+    "test:compliance": "vitest run tests/inalterabilite.test.ts tests/chainage.test.ts tests/conservation.test.ts tests/jet.test.ts tests/storage.contract.test.ts",
+    "test:postgres": "vitest run postgres",
+    "lint": "eslint src tests --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "migrate": "node dist/src/storage/migrate.js",
+    "verify-integrity": "node dist/src/cli/verify-integrity.js",
+    "generate-attestation": "node dist/src/cli/generate-attestation.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "pdfkit": "^0.18.0",
+    "pg": "^8.11.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pdfkit": "^0.17.6",
+    "@types/pg": "^8.11.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^1.4.0",
+    "@vitest/ui": "^4.1.5",
+    "eslint": "^8.57.0",
+    "testcontainers": "^10.7.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "src/storage/migrations",
+    "keys/public-keys.json",
+    "README.md",
+    "COMPLIANCE.md",
+    "ATTESTATION.md",
+    "CHANGELOG.md",
+    "docs/USER_OBLIGATIONS.md",
+    "docs/INTEGRATION.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "loi anti-fraude TVA",
+    "art. 286 I 3° bis CGI",
+    "logiciel de caisse",
+    "compliance",
+    "tva",
+    "encaissement",
+    "fiscal",
+    "france",
+    "bofip",
+    "caisse-enregistreuse",
+    "point-of-sale",
+    "cgi-286"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

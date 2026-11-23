@@ -1,0 +1,4 @@
+{
+  "_comment": "Public-key registry for CAISSEIA. Add a new entry every time the signing key is rotated — never delete an entry. Bundled in every restitution export so the tax administration can verify archived signatures offline, even years after rotation.",
+  "keys": []
+}

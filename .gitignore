@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+.env.*
+*.log
+.DS_Store
+coverage/
+.vitest/
+*.tsbuildinfo
+tests/_reports/
+
+# Attestations signées : on garde le PDF dans le repo MAIS pas les drafts
+attestations/**/*.draft.pdf
+attestations/**/*.tmp
+
+# Clés privées éditeur (signature des clôtures) : JAMAIS dans le repo
+*.pem
+*.key
+.signing-keys/
